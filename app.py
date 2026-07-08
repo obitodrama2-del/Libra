@@ -6,7 +6,7 @@ import io
 import streamlit as st
 import pandas as pd
 
-from rakordim import rakordo, format_workbook
+from rakordim import rakordo, format_workbook, parse_transaksionet, identifiko_operatorin_transaksione
 
 st.set_page_config(page_title="Rakordim Financa vs Portal", layout="wide")
 st.title("Rakordim: Libri i Shitjeve Financa vs Portali Self Care")
@@ -16,6 +16,11 @@ with col1:
     financa_file = st.file_uploader("Libri i Shitjeve - Financa", type=["xlsx"], key="financa")
 with col2:
     portal_file = st.file_uploader("Libri i Shitjeve - Portal Self Care", type=["xlsx"], key="portal")
+
+trans_files = st.file_uploader(
+    "Transaksionet e detajuara (opsionale, për ditët problematike - identifikon automatikisht pikën e shitjes)",
+    type=["xlsx"], key="transaksionet", accept_multiple_files=True
+)
 
 def get_sheet_names(uploaded_file):
     if uploaded_file is None:
@@ -46,14 +51,25 @@ if run:
     portal_file.seek(0)
     try:
         with st.spinner("Duke rakorduar..."):
-            subjekt_diff, cmp, operator_report = rakordo(financa_file, financa_sheet, portal_file, portal_sheet)
+            subjekt_diff, cmp, operator_report, fin_rand = rakordo(financa_file, financa_sheet, portal_file, portal_sheet)
             subjekt_diff = subjekt_diff.drop(columns=['_merge'])
+
+            detaje_operatori = pd.DataFrame()
+            if trans_files:
+                detaje_rows = []
+                for tf in trans_files:
+                    tf.seek(0)
+                    trans_df = parse_transaksionet(tf)
+                    detaje_rows.append(identifiko_operatorin_transaksione(fin_rand, trans_df))
+                detaje_operatori = pd.concat(detaje_rows, ignore_index=True)
 
             buf = io.BytesIO()
             with pd.ExcelWriter(buf, engine='openpyxl') as writer:
                 operator_report.to_excel(writer, sheet_name='Operatori_Problematik', index=False)
                 cmp.to_excel(writer, sheet_name='Klient_Rastesishem_Ditor', index=False)
                 subjekt_diff.to_excel(writer, sheet_name='Subjekt_Identifikuar', index=False)
+                if not detaje_operatori.empty:
+                    detaje_operatori.to_excel(writer, sheet_name='Detaje_Operatori', index=False)
             buf.seek(0)
             format_workbook(buf)
             buf.seek(0)
@@ -73,10 +89,22 @@ if run:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-        tab1, tab2, tab3 = st.tabs(["Operatori Problematik", "Klient Rastësishëm Ditor", "Subjekt Identifikuar"])
-        with tab1:
+        tab_names = ["Operatori Problematik", "Klient Rastësishëm Ditor", "Subjekt Identifikuar"]
+        if not detaje_operatori.empty:
+            tab_names.append("Detaje Operatori (nga Transaksionet)")
+        tabs = st.tabs(tab_names)
+        with tabs[0]:
             st.dataframe(operator_report, use_container_width=True)
-        with tab2:
+        with tabs[1]:
             st.dataframe(cmp, use_container_width=True)
-        with tab3:
+        with tabs[2]:
             st.dataframe(subjekt_diff, use_container_width=True)
+        if not detaje_operatori.empty:
+            with tabs[3]:
+                st.dataframe(
+                    detaje_operatori.style.apply(
+                        lambda r: ['background-color: #ffc7ce' if r['Status'] == 'KONTROLLO' else 'background-color: #c6efce'] * len(r),
+                        axis=1
+                    ),
+                    use_container_width=True
+                )

@@ -26,6 +26,61 @@ def parse_libri(path, sheet_name):
     return data.reset_index(drop=True)
 
 
+def parse_transaksionet(path):
+    """Lexon skedarin e transaksioneve te detajuara te eksportuar nga Portali Self Care (fleta 'data')."""
+    df = pd.read_excel(path, sheet_name='data')
+    df['Data e fiskalizimit'] = pd.to_datetime(df['Data e fiskalizimit'], errors='coerce', dayfirst=True)
+    return df
+
+
+def identifiko_operatorin_transaksione(fin_rand, trans_df, tol=5):
+    """
+    Perputh cdo pike shitjeje (Bleresi ne Financa) me kodin e operatorit ne Portal,
+    duke krahasuar totalet ditore te klienteve te rastesishem (pa NIVF).
+    Kthen nje DataFrame me diferencat per cdo pike shitjeje te dites.
+    """
+    data_val = trans_df['Data e fiskalizimit'].mode().iloc[0]
+    random_tx = trans_df[trans_df['Numri i identifikimit të blerësit'].isna()]
+    portal_by_code = random_tx.groupby('Kodi i operatorit')['Vlera totale me TVSH'].sum().to_dict()
+
+    fin_day = fin_rand[fin_rand['Data'] == data_val]
+    fin_by_bleresi = fin_day.groupby('Bleresi')['Vlera'].sum().to_dict()
+
+    pairs = [
+        (abs(fv - pv), bleresi, code)
+        for bleresi, fv in fin_by_bleresi.items()
+        for code, pv in portal_by_code.items()
+    ]
+    pairs.sort(key=lambda x: x[0])
+
+    matched_bleresi, matched_code = {}, {}
+    for _, bleresi, code in pairs:
+        if bleresi in matched_bleresi or code in matched_code:
+            continue
+        matched_bleresi[bleresi] = code
+        matched_code[code] = bleresi
+
+    rows = []
+    for bleresi, fin_val in fin_by_bleresi.items():
+        code = matched_bleresi.get(bleresi)
+        portal_val = portal_by_code.get(code) if code else None
+        diff = fin_val - (portal_val if portal_val is not None else 0)
+        rows.append({
+            'Data': data_val, 'Bleresi': bleresi, 'Financa_Vlera': fin_val,
+            'Kodi_Operatorit': code, 'Portal_Vlera': portal_val, 'Diferenca': diff
+        })
+    for code, portal_val in portal_by_code.items():
+        if code not in matched_code:
+            rows.append({
+                'Data': data_val, 'Bleresi': None, 'Financa_Vlera': None,
+                'Kodi_Operatorit': code, 'Portal_Vlera': portal_val, 'Diferenca': -portal_val
+            })
+
+    result = pd.DataFrame(rows)
+    result['Status'] = np.where(result['Diferenca'].abs() <= tol, 'OK', 'KONTROLLO')
+    return result.sort_values('Diferenca', key=abs, ascending=False).reset_index(drop=True)
+
+
 def find_operator_combo(target_diff, operator_totals, tol=5, max_combo=3):
     """Gjen kombinimin e operatorëve (deri në max_combo) që shpjegon diferencën."""
     items = list(operator_totals.items())
@@ -81,7 +136,7 @@ def rakordo(financa_path, financa_sheet, portal_path, portal_sheet):
         })
     operator_report = pd.DataFrame(problem_rows)
 
-    return subjekt_diff, cmp, operator_report
+    return subjekt_diff, cmp, operator_report, fin_rand
 
 
 def format_workbook(path):
@@ -128,7 +183,7 @@ def format_workbook(path):
 
 if __name__ == '__main__':
     financa_path, portal_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
-    subjekt_diff, cmp, operator_report = rakordo(financa_path, 'shitje', portal_path, 'Sales book')
+    subjekt_diff, cmp, operator_report, fin_rand = rakordo(financa_path, 'shitje', portal_path, 'Sales book')
 
     subjekt_diff = subjekt_diff.drop(columns=['_merge'])
 
