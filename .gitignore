@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Skedaret e te dhenave reale te shitjeve - nuk shkojne ne repo
+Plenty shitjet/
+Rakordim_*.xlsx
+*.xlsx
+!*.template.xlsx
