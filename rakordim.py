@@ -12,18 +12,71 @@ import sys
 
 TOLERANCE = 5  # lek, diferenca nën këtë vlerë konsiderohen rrumbullakosje
 
+# Kolonat e kategorive te TVSH-se ne Librin e Shitjes (format zyrtar), sipas kodeve
+# a,b,c,ç,d,dh,e,ë,f,g,gj,h,i,j,k,l,ll,m,n,nj,o,p,q -> indekset 0-22.
+# 'e' (indeks 6, Vlera totale) tashme perfshihet si 'Vlera'; kategorite e meposhtme
+# jane komponentet qe e perbejne ate total - nese nje shitje kalon gabimisht nga
+# nje kategori ne tjetren me te njejten vlere, totali nuk e kap gabimin, prandaj
+# krahasohen edhe keto ndaras.
+KATEGORITE_TVSH = {
+    7: 'Perjashtuar_e',
+    8: 'PaTvsh_f',
+    9: 'PaTvsh_g',
+    10: 'PaTvsh_gj',
+    11: 'Tatueshme20',
+    12: 'Tvsh20',
+    13: 'Tatueshme10',
+    14: 'Tvsh10',
+    15: 'Tatueshme6',
+    16: 'Tvsh6',
+    17: 'Import20_baze',
+    18: 'Import20_tvsh',
+    19: 'ImportTjeter_baze',
+    20: 'ImportTjeter_tvsh',
+    21: 'Tjeter_p',
+    22: 'Tjeter_q',
+}
+
 def parse_libri(path, sheet_name):
     raw = pd.read_excel(path, sheet_name=sheet_name, header=None)
     code_row_idx = raw[raw[0].astype(str) == 'a'].index[0]
     stop_candidates = raw[raw[0].astype(str).str.contains('Shuma', case=False, na=False)].index
     stop_idx = stop_candidates[stop_candidates > code_row_idx][0]
-    data = raw.iloc[code_row_idx+1:stop_idx, [0,1,2,3,4,5,6]].copy()
-    data.columns = ['NrFature','NumriSerial','Data','Bleresi','Rrethi','NIPT','Vlera']
+    kat_cols = list(KATEGORITE_TVSH.keys())
+    data = raw.iloc[code_row_idx+1:stop_idx, [0,1,2,3,4,5,6]+kat_cols].copy()
+    data.columns = ['NrFature','NumriSerial','Data','Bleresi','Rrethi','NIPT','Vlera'] + list(KATEGORITE_TVSH.values())
     data['Data'] = pd.to_datetime(data['Data'], errors='coerce', dayfirst=True)
     data['Vlera'] = pd.to_numeric(data['Vlera'], errors='coerce')
+    for col in KATEGORITE_TVSH.values():
+        data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
     data['NIPT'] = data['NIPT'].astype(str).str.strip()
     data.loc[data['NIPT'].isin(['nan','None','']), 'NIPT'] = np.nan
     return data.reset_index(drop=True)
+
+
+def krahaso_kategorite_tvsh(fin, port, tol=TOLERANCE):
+    """
+    Krahason totalet ditore te cdo kategorie TVSH-je (jo vetem totalin final).
+    Kap rastet kur nje shitje kalon gabimisht nga nje kategori (p.sh. e perjashtuar
+    nga TVSH) ne nje tjeter (p.sh. e tatueshme 20%) me te njejten vlere - gabim qe
+    krahasimi i totalit te vetem nuk e sheh.
+    """
+    kategori_cols = list(KATEGORITE_TVSH.values())
+    fin_by_date = fin.groupby('Data')[kategori_cols].sum()
+    port_by_date = port.groupby('Data')[kategori_cols].sum()
+
+    rows = []
+    for data_val in sorted(set(fin_by_date.index) | set(port_by_date.index)):
+        fin_row = fin_by_date.loc[data_val] if data_val in fin_by_date.index else pd.Series(0, index=kategori_cols)
+        port_row = port_by_date.loc[data_val] if data_val in port_by_date.index else pd.Series(0, index=kategori_cols)
+        for kat in kategori_cols:
+            diff = fin_row[kat] - port_row[kat]
+            if abs(diff) > tol:
+                rows.append({
+                    'Data': data_val, 'Kategoria': kat,
+                    'Financa': fin_row[kat], 'Portal': port_row[kat], 'Diferenca': diff
+                })
+    return pd.DataFrame(rows, columns=['Data','Kategoria','Financa','Portal','Diferenca'])
 
 
 def parse_transaksionet(path):
@@ -136,7 +189,10 @@ def rakordo(financa_path, financa_sheet, portal_path, portal_sheet):
         })
     operator_report = pd.DataFrame(problem_rows)
 
-    return subjekt_diff, cmp, operator_report, fin_rand
+    # --- 4. Diferenca sipas kategorive te TVSH-se (edhe kur totali ditor perputhet) ---
+    kategori_diff = krahaso_kategorite_tvsh(fin, port)
+
+    return subjekt_diff, cmp, operator_report, fin_rand, kategori_diff
 
 
 def format_workbook(path):
@@ -183,7 +239,7 @@ def format_workbook(path):
 
 if __name__ == '__main__':
     financa_path, portal_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
-    subjekt_diff, cmp, operator_report, fin_rand = rakordo(financa_path, 'shitje', portal_path, 'Sales book')
+    subjekt_diff, cmp, operator_report, fin_rand, kategori_diff = rakordo(financa_path, 'shitje', portal_path, 'Sales book')
 
     subjekt_diff = subjekt_diff.drop(columns=['_merge'])
 
@@ -191,9 +247,13 @@ if __name__ == '__main__':
         operator_report.to_excel(writer, sheet_name='Operatori_Problematik', index=False)
         cmp.to_excel(writer, sheet_name='Klient_Rastesishem_Ditor', index=False)
         subjekt_diff.to_excel(writer, sheet_name='Subjekt_Identifikuar', index=False)
+        kategori_diff.to_excel(writer, sheet_name='Diferenca_Kategori_TVSH', index=False)
 
     format_workbook(out_path)
 
     print("Subjekt identifikuar - diferenca gjetur:", len(subjekt_diff))
     print("Ditë me diferencë tek klienti i rastësishëm:", (cmp['Status']=='KONTROLLO').sum())
+    print("Diferenca sipas kategorive TVSH:", len(kategori_diff))
     print(operator_report.to_string())
+    if len(kategori_diff):
+        print(kategori_diff.to_string())

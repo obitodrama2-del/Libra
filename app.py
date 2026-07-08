@@ -51,7 +51,7 @@ if run:
     portal_file.seek(0)
     try:
         with st.spinner("Duke rakorduar..."):
-            subjekt_diff, cmp, operator_report, fin_rand = rakordo(financa_file, financa_sheet, portal_file, portal_sheet)
+            subjekt_diff, cmp, operator_report, fin_rand, kategori_diff = rakordo(financa_file, financa_sheet, portal_file, portal_sheet)
             subjekt_diff = subjekt_diff.drop(columns=['_merge'])
 
             detaje_operatori = pd.DataFrame()
@@ -68,6 +68,7 @@ if run:
                 operator_report.to_excel(writer, sheet_name='Operatori_Problematik', index=False)
                 cmp.to_excel(writer, sheet_name='Klient_Rastesishem_Ditor', index=False)
                 subjekt_diff.to_excel(writer, sheet_name='Subjekt_Identifikuar', index=False)
+                kategori_diff.to_excel(writer, sheet_name='Diferenca_Kategori_TVSH', index=False)
                 if not detaje_operatori.empty:
                     detaje_operatori.to_excel(writer, sheet_name='Detaje_Operatori', index=False)
             buf.seek(0)
@@ -78,9 +79,10 @@ if run:
     else:
         st.success("Rakordimi u krye me sukses.")
 
-        m1, m2 = st.columns(2)
+        m1, m2, m3 = st.columns(3)
         m1.metric("Subjekt identifikuar - diferenca gjetur", len(subjekt_diff))
         m2.metric("Ditë me diferencë (klient i rastësishëm)", int((cmp['Status'] == 'KONTROLLO').sum()))
+        m3.metric("Diferenca sipas kategorive TVSH", len(kategori_diff))
 
         st.download_button(
             "Shkarko raportin (Excel)",
@@ -89,7 +91,7 @@ if run:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-        tab_names = ["Operatori Problematik", "Klient Rastësishëm Ditor", "Subjekt Identifikuar"]
+        tab_names = ["Operatori Problematik", "Klient Rastësishëm Ditor", "Subjekt Identifikuar", "Diferenca Kategori TVSH"]
         if not detaje_operatori.empty:
             tab_names.append("Detaje Operatori (nga Transaksionet)")
         tabs = st.tabs(tab_names)
@@ -99,8 +101,11 @@ if run:
             st.dataframe(cmp, use_container_width=True)
         with tabs[2]:
             st.dataframe(subjekt_diff, use_container_width=True)
+        with tabs[3]:
+            st.caption("Diferenca ndaras per çdo kategori TVSH-je (Perjashtuar, Tatueshme 20%/10%/6%, etj.) — kap edhe rastet kur totali ditor përputhet por një shitje ka kaluar gabimisht nga një kategori në tjetrën.")
+            st.dataframe(kategori_diff, use_container_width=True)
         if not detaje_operatori.empty:
-            with tabs[3]:
+            with tabs[4]:
                 st.dataframe(
                     detaje_operatori.style.apply(
                         lambda r: ['background-color: #ffc7ce' if r['Status'] == 'KONTROLLO' else 'background-color: #c6efce'] * len(r),
