@@ -234,6 +234,13 @@ def format_workbook(path):
             max_len = max((len(str(c.value)) for c in col if c.value is not None), default=10)
             ws.column_dimensions[get_column_letter(i)].width = min(max_len+2, 45)
         ws.freeze_panes = 'A2'
+
+    if hasattr(path, 'seek'):
+        # path eshte nje file-like object (p.sh. io.BytesIO) i lexuar deri ne fund
+        # nga load_workbook me lart; duhet zbrazur para se te rishkruhet, perndryshe
+        # bajtet e reja shtohen mbi te vjetrat dhe skedari del i demtuar per Excel-in.
+        path.seek(0)
+        path.truncate()
     wb.save(path)
 
 
