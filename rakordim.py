@@ -1,9 +1,9 @@
 """
 Rakordim mujor: Libri i Shitjeve Financa vs Portali Self Care
 Identifikon automatikisht:
- 1. Diferencat në faturat me subjekt të identifikuar (match sipas Numrit Serial/NIVF)
- 2. Diferencat në totalet ditore të klientëve të rastësishëm
- 3. Operatorin (pikën e shitjes) përgjegjës për diferencën, në ditët problematike
+1. Diferencat në faturat me subjekt të identifikuar (match sipas Numrit Serial/NIVF)
+2. Diferencat në totalet ditore të klientëve të rastësishëm
+3. Operatorin (pikën e shitjes) përgjegjës për diferencën, në ditët problematike
 """
 import pandas as pd
 import numpy as np
@@ -12,12 +12,6 @@ import sys
 
 TOLERANCE = 5  # lek, diferenca nën këtë vlerë konsiderohen rrumbullakosje
 
-# Kolonat e kategorive te TVSH-se ne Librin e Shitjes (format zyrtar), sipas kodeve
-# a,b,c,ç,d,dh,e,ë,f,g,gj,h,i,j,k,l,ll,m,n,nj,o,p,q -> indekset 0-22.
-# 'e' (indeks 6, Vlera totale) tashme perfshihet si 'Vlera'; kategorite e meposhtme
-# jane komponentet qe e perbejne ate total - nese nje shitje kalon gabimisht nga
-# nje kategori ne tjetren me te njejten vlere, totali nuk e kap gabimin, prandaj
-# krahasohen edhe keto ndaras.
 KATEGORITE_TVSH = {
     7: 'Perjashtuar_e',
     8: 'PaTvsh_f',
@@ -37,6 +31,7 @@ KATEGORITE_TVSH = {
     22: 'Tjeter_q',
 }
 
+
 def parse_libri(path, sheet_name):
     raw = pd.read_excel(path, sheet_name=sheet_name, header=None)
     code_row_idx = raw[raw[0].astype(str) == 'a'].index[0]
@@ -55,16 +50,9 @@ def parse_libri(path, sheet_name):
 
 
 def krahaso_kategorite_tvsh(fin, port, tol=TOLERANCE):
-    """
-    Krahason totalet ditore te cdo kategorie TVSH-je (jo vetem totalin final).
-    Kap rastet kur nje shitje kalon gabimisht nga nje kategori (p.sh. e perjashtuar
-    nga TVSH) ne nje tjeter (p.sh. e tatueshme 20%) me te njejten vlere - gabim qe
-    krahasimi i totalit te vetem nuk e sheh.
-    """
     kategori_cols = list(KATEGORITE_TVSH.values())
     fin_by_date = fin.groupby('Data')[kategori_cols].sum()
     port_by_date = port.groupby('Data')[kategori_cols].sum()
-
     rows = []
     for data_val in sorted(set(fin_by_date.index) | set(port_by_date.index)):
         fin_row = fin_by_date.loc[data_val] if data_val in fin_by_date.index else pd.Series(0, index=kategori_cols)
@@ -87,15 +75,9 @@ def parse_transaksionet(path):
 
 
 def identifiko_operatorin_transaksione(fin_rand, trans_df, tol=5):
-    """
-    Perputh cdo pike shitjeje (Bleresi ne Financa) me kodin e operatorit ne Portal,
-    duke krahasuar totalet ditore te klienteve te rastesishem (pa NIVF).
-    Kthen nje DataFrame me diferencat per cdo pike shitjeje te dites.
-    """
     data_val = trans_df['Data e fiskalizimit'].mode().iloc[0]
     random_tx = trans_df[trans_df['Numri i identifikimit të blerësit'].isna()]
     portal_by_code = random_tx.groupby('Kodi i operatorit')['Vlera totale me TVSH'].sum().to_dict()
-
     fin_day = fin_rand[fin_rand['Data'] == data_val]
     fin_by_bleresi = fin_day.groupby('Bleresi')['Vlera'].sum().to_dict()
 
@@ -152,12 +134,23 @@ def rakordo(financa_path, financa_sheet, portal_path, portal_sheet):
     # --- 1. Subjekt i identifikuar ---
     fin_id = fin[fin['NIPT'].notna()]
     port_id = port[port['NIPT'].notna()]
+
+    # FIX: merret Data/Bleresi/NIPT edhe nga Portali, jo vetem NumriSerial+Vlera,
+    # perndryshe rreshtat "Mungon ne Financa" (right_only) mbeten pa keto te dhena.
     merged = pd.merge(
         fin_id[['NumriSerial','Data','Bleresi','NIPT','Vlera']],
-        port_id[['NumriSerial','Vlera']],
+        port_id[['NumriSerial','Data','Bleresi','NIPT','Vlera']],
         on='NumriSerial', how='outer', suffixes=('_Financa','_Portal'), indicator=True
     )
     merged['Diferenca'] = merged['Vlera_Financa'].fillna(0) - merged['Vlera_Portal'].fillna(0)
+
+    # Kombino kolonat identifikuese: merr vleren nga Financa, e nese mungon, nga Portali
+    merged['Data'] = merged['Data_Financa'].combine_first(merged['Data_Portal'])
+    merged['Bleresi'] = merged['Bleresi_Financa'].combine_first(merged['Bleresi_Portal'])
+    merged['NIPT'] = merged['NIPT_Financa'].combine_first(merged['NIPT_Portal'])
+    merged = merged.drop(columns=['Data_Financa','Data_Portal','Bleresi_Financa','Bleresi_Portal','NIPT_Financa','NIPT_Portal'])
+    merged = merged[['NumriSerial','Data','Bleresi','NIPT','Vlera_Financa','Vlera_Portal','Diferenca','_merge']]
+
     subjekt_diff = merged[(merged['Diferenca'].abs() > TOLERANCE) | (merged['_merge'] != 'both')].copy()
     subjekt_diff['Problemi'] = np.where(
         subjekt_diff['_merge'] == 'left_only', 'Mungon në Portal',
@@ -212,9 +205,11 @@ def format_workbook(path):
             cell.font = header_font
             cell.fill = header_fill
             cell.alignment = Alignment(horizontal='center')
+
         headers = [c.value for c in ws[1]]
         status_col = headers.index('Status')+1 if 'Status' in headers else None
         oper_col = headers.index('Operatori(et) i identifikuar')+1 if 'Operatori(et) i identifikuar' in headers else None
+
         for row in ws.iter_rows(min_row=2):
             for cell in row:
                 cell.font = base_font
@@ -230,15 +225,13 @@ def format_workbook(path):
             elif oper_col and row[oper_col-1].value:
                 for cell in row:
                     cell.fill = green_fill
+
         for i, col in enumerate(ws.columns, 1):
             max_len = max((len(str(c.value)) for c in col if c.value is not None), default=10)
             ws.column_dimensions[get_column_letter(i)].width = min(max_len+2, 45)
         ws.freeze_panes = 'A2'
 
     if hasattr(path, 'seek'):
-        # path eshte nje file-like object (p.sh. io.BytesIO) i lexuar deri ne fund
-        # nga load_workbook me lart; duhet zbrazur para se te rishkruhet, perndryshe
-        # bajtet e reja shtohen mbi te vjetrat dhe skedari del i demtuar per Excel-in.
         path.seek(0)
         path.truncate()
     wb.save(path)
@@ -247,17 +240,13 @@ def format_workbook(path):
 if __name__ == '__main__':
     financa_path, portal_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
     subjekt_diff, cmp, operator_report, fin_rand, kategori_diff = rakordo(financa_path, 'shitje', portal_path, 'Sales book')
-
     subjekt_diff = subjekt_diff.drop(columns=['_merge'])
-
     with pd.ExcelWriter(out_path, engine='openpyxl') as writer:
         operator_report.to_excel(writer, sheet_name='Operatori_Problematik', index=False)
         cmp.to_excel(writer, sheet_name='Klient_Rastesishem_Ditor', index=False)
         subjekt_diff.to_excel(writer, sheet_name='Subjekt_Identifikuar', index=False)
         kategori_diff.to_excel(writer, sheet_name='Diferenca_Kategori_TVSH', index=False)
-
     format_workbook(out_path)
-
     print("Subjekt identifikuar - diferenca gjetur:", len(subjekt_diff))
     print("Ditë me diferencë tek klienti i rastësishëm:", (cmp['Status']=='KONTROLLO').sum())
     print("Diferenca sipas kategorive TVSH:", len(kategori_diff))
