@@ -6,7 +6,8 @@ import io
 import streamlit as st
 import pandas as pd
 
-from rakordim import rakordo, format_workbook, parse_transaksionet, identifiko_operatorin_transaksione
+from rakordim import (rakordo, shkruaj_raportin, parse_transaksionet,
+                      identifiko_operatorin_transaksione)
 
 st.set_page_config(page_title="Rakordim Financa vs Portal", layout="wide")
 st.title("Rakordim: Libri i Shitjeve Financa vs Portali Self Care")
@@ -16,6 +17,19 @@ with col1:
     financa_file = st.file_uploader("Libri i Shitjeve - Financa", type=["xlsx"], key="financa")
 with col2:
     portal_file = st.file_uploader("Libri i Shitjeve - Portal Self Care", type=["xlsx"], key="portal")
+
+with st.expander("Opsionale: muaji paraardhës dhe pasardhës (për faturat që kalojnë nga një muaj te tjetri)"):
+    col5, col6 = st.columns(2)
+    with col5:
+        portal_prev_file = st.file_uploader(
+            "Self Care i muajit paraardhës (faturat F5 që gjenden aty: \"Deklaruar ne ...\")",
+            type=["xlsx"], key="portal_prev"
+        )
+    with col6:
+        financa_next_file = st.file_uploader(
+            "F5 i muajit pasardhës (faturat SC që mungojnë në F5 por dalin aty)",
+            type=["xlsx"], key="financa_next"
+        )
 
 trans_files = st.file_uploader(
     "Transaksionet e detajuara (opsionale, për ditët problematike - identifikon automatikisht pikën e shitjes)",
@@ -47,12 +61,10 @@ with col4:
 run = st.button("Krahaso", type="primary", disabled=not (financa_file and portal_file))
 
 if run:
-    financa_file.seek(0)
-    portal_file.seek(0)
     try:
         with st.spinner("Duke rakorduar..."):
-            subjekt_diff, cmp, operator_report, fin_rand, kategori_diff = rakordo(financa_file, financa_sheet, portal_file, portal_sheet)
-            subjekt_diff = subjekt_diff.drop(columns=['_merge'])
+            rez = rakordo(financa_file, financa_sheet, portal_file, portal_sheet,
+                          portal_prev_path=portal_prev_file, fin_next_path=financa_next_file)
 
             detaje_operatori = pd.DataFrame()
             if trans_files:
@@ -60,29 +72,28 @@ if run:
                 for tf in trans_files:
                     tf.seek(0)
                     trans_df = parse_transaksionet(tf)
-                    detaje_rows.append(identifiko_operatorin_transaksione(fin_rand, trans_df))
+                    detaje_rows.append(identifiko_operatorin_transaksione(rez['fin_rand'], trans_df))
                 detaje_operatori = pd.concat(detaje_rows, ignore_index=True)
 
             buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-                operator_report.to_excel(writer, sheet_name='Operatori_Problematik', index=False)
-                cmp.to_excel(writer, sheet_name='Klient_Rastesishem_Ditor', index=False)
-                subjekt_diff.to_excel(writer, sheet_name='Subjekt_Identifikuar', index=False)
-                kategori_diff.to_excel(writer, sheet_name='Diferenca_Kategori_TVSH', index=False)
-                if not detaje_operatori.empty:
-                    detaje_operatori.to_excel(writer, sheet_name='Detaje_Operatori', index=False)
-            buf.seek(0)
-            format_workbook(buf)
+            shkruaj_raportin(rez, buf, detaje_operatori)
             buf.seek(0)
     except Exception as e:
         st.error(f"Gabim gjatë përpunimit: {e}")
     else:
-        st.success("Rakordimi u krye me sukses.")
+        for p in rez['paralajmerime']:
+            st.warning(p)
+        if not rez['paralajmerime']:
+            st.success("Rakordimi u krye me sukses.")
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Subjekt identifikuar - diferenca gjetur", len(subjekt_diff))
-        m2.metric("Ditë me diferencë (klient i rastësishëm)", int((cmp['Status'] == 'KONTROLLO').sum()))
-        m3.metric("Diferenca sipas kategorive TVSH", len(kategori_diff))
+        subjekt_diff, cmp, kategori_diff = rez['subjekt_diff'], rez['cmp'], rez['kategori_diff']
+        diferenca_finale = rez['kontroll']['Shuma'].iloc[-1]
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Diferenca finale (pas korrigjimeve)", f"{diferenca_finale:,.0f}")
+        m2.metric("Subjekt identifikuar - rreshta", len(subjekt_diff))
+        m3.metric("Ditë me diferencë (klient i rastësishëm)", int((cmp['Status'] == 'KONTROLLO').sum()))
+        m4.metric("Diferenca sipas kategorive TVSH", len(kategori_diff))
 
         st.download_button(
             "Shkarko raportin (Excel)",
@@ -91,21 +102,27 @@ if run:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-        tab_names = ["Operatori Problematik", "Klient Rastësishëm Ditor", "Subjekt Identifikuar", "Diferenca Kategori TVSH"]
+        tab_names = ["Kontroll", "Subjekt Identifikuar", "Operatori Problematik",
+                     "Klient Rastësishëm Ditor", "Diferenca Kategori TVSH"]
         if not detaje_operatori.empty:
             tab_names.append("Detaje Operatori (nga Transaksionet)")
         tabs = st.tabs(tab_names)
         with tabs[0]:
-            st.dataframe(operator_report, use_container_width=True)
+            st.caption("Financa e korrigjuar = F5 − faturat e deklaruara muajin paraardhës − pa serial + faturat që dalin në F5 muajin pasardhës. Duhet të bjerë me Portalin, me diferencë vetëm rrumbullakime.")
+            st.dataframe(rez['kontroll'], use_container_width=True)
         with tabs[1]:
-            st.dataframe(cmp, use_container_width=True)
-        with tabs[2]:
+            if len(subjekt_diff):
+                st.write(subjekt_diff['Problemi'].value_counts())
             st.dataframe(subjekt_diff, use_container_width=True)
+        with tabs[2]:
+            st.dataframe(rez['operator_report'], use_container_width=True)
         with tabs[3]:
+            st.dataframe(cmp, use_container_width=True)
+        with tabs[4]:
             st.caption("Diferenca ndaras per çdo kategori TVSH-je (Perjashtuar, Tatueshme 20%/10%/6%, etj.) — kap edhe rastet kur totali ditor përputhet por një shitje ka kaluar gabimisht nga një kategori në tjetrën.")
             st.dataframe(kategori_diff, use_container_width=True)
         if not detaje_operatori.empty:
-            with tabs[4]:
+            with tabs[5]:
                 st.dataframe(
                     detaje_operatori.style.apply(
                         lambda r: ['background-color: #ffc7ce' if r['Status'] == 'KONTROLLO' else 'background-color: #c6efce'] * len(r),
