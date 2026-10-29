@@ -58,7 +58,7 @@ col3, col4 = st.columns(2)
 with col3:
     financa_sheet = zgjidh_fleten("Fleta - Financa", financa_sheets, ('shitje', 'blerje') if mode == 'Shitje' else ('blerje', 'Purchase book'))
 with col4:
-    portal_sheet = zgjidh_fleten("Fleta - Portal", portal_sheets, ('Sales book',) if mode == 'Shitje' else ('Purchase book', 'Purchases book'))
+    portal_sheet = zgjidh_fleten("Fleta - Portal", portal_sheets, ('Sales book',) if mode == 'Shitje' else ('Purchases book', 'Purchase book'))
 
 cutoff = None
 with st.expander("Data e shkarkimit të Librit SC (opsionale)"):
