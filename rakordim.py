@@ -312,6 +312,9 @@ def gjej_kandidate(ex_op, shuma, tol=1, max_rez=5, max_fatura=2000):
     ex_op = ex_op.dropna(subset=['Vlera']).reset_index(drop=True)
     singles = ex_op[(ex_op['Vlera'] - shuma).abs() <= tol]
     if len(singles):
+        singles = singles.assign(_d=(singles['Vlera'] - shuma).abs()).sort_values('_d', kind='stable')
+        exact = singles[singles['_d'] == singles['_d'].min()]
+        singles = exact if len(exact) < len(singles) and float(exact['_d'].iloc[0]) == 0 else singles
         return [etiketa(r) for _, r in singles.head(max_rez).iterrows()]
     if len(ex_op) > max_fatura:
         return []
@@ -323,8 +326,8 @@ def gjej_kandidate(ex_op, shuma, tol=1, max_rez=5, max_fatura=2000):
         hi = np.searchsorted(vals, shuma - vals[i] + tol, side='right')
         for j in range(max(lo, i + 1), hi):
             gjetur.append(f"çift: [{etiketa(rend.iloc[i])}] + [{etiketa(rend.iloc[j])}]")
-            if len(gjetur) >= max_rez:
-                return gjetur
+            if len(gjetur) > 1:
+                return []  # disa çifte të mundshme = të pasigurta, nuk listohen
     return gjetur
 
 
