@@ -510,14 +510,18 @@ def rakordo(financa_path, financa_sheet, portal_path, portal_sheet,
     port_id = port[port['NIPT'].notna()]
     pa_serial = fin_id[fin_id['NumriSerial'].isna()].copy()
     kol_m = ['NumriSerial', 'NrFature', 'Data', 'Bleresi', 'NIPT', 'Vlera']
-    merged = pd.merge(
-        fin_id[fin_id['NumriSerial'].notna()][kol_m],
-        port_id[port_id['NumriSerial'].notna()][kol_m],
-        on='NumriSerial', how='outer', suffixes=('_Financa', '_Portal'), indicator=True
-    )
+    # Serial i përsëritur (e njëjta NIVF disa herë): çiftohet rreshti i parë, të tjerët dalin pa çift,
+    # përndryshe merge shumëfishon vlerën e anës tjetër dhe totali nuk bie.
+    fin_k = fin_id[fin_id['NumriSerial'].notna()][kol_m].copy()
+    port_k = port_id[port_id['NumriSerial'].notna()][kol_m].copy()
+    fin_k['_occ'] = fin_k.groupby('NumriSerial').cumcount()
+    port_k['_occ'] = port_k.groupby('NumriSerial').cumcount()
+    serial_dyfishuar = set(fin_k.loc[fin_k['_occ'] > 0, 'NumriSerial'])
+    merged = pd.merge(fin_k, port_k, on=['NumriSerial', '_occ'], how='outer',
+                      suffixes=('_Financa', '_Portal'), indicator=True)
     for col in ('NrFature', 'Data', 'Bleresi', 'NIPT'):
         merged[col] = merged[f'{col}_Financa'].combine_first(merged[f'{col}_Portal'])
-    merged = merged[['NumriSerial', 'NrFature', 'Data', 'Bleresi', 'NIPT', 'Vlera_Financa', 'Vlera_Portal', '_merge']]
+    merged = merged[['NumriSerial', 'NrFature', 'Data', 'Bleresi', 'NIPT', 'Vlera_Financa', 'Vlera_Portal', '_merge', '_occ']]
     merged['Diferenca'] = merged['Vlera_Financa'].fillna(0) - merged['Vlera_Portal'].fillna(0)
 
     prev_serials = set(port_prev['NumriSerial'].dropna()) if port_prev is not None else set()
@@ -553,7 +557,10 @@ def rakordo(financa_path, financa_sheet, portal_path, portal_sheet,
         elif tipi == 'left_only':
             problem = 'Mungon në Portal'
             nk = str(serial).lower()
-            if pas_cutoff(r['Data']):
+            if r['_occ'] > 0:
+                status = ST_MUNGON_PORTAL
+                shenim = f"NIVF e përsëritur në Financa (fatura {r['NrFature']}); Portali e ka vetëm një herë. Kontrollo dyfishim."
+            elif pas_cutoff(r['Data']):
                 status = ST_PAS
             elif nk in nivf_fisk and pas_cutoff(nivf_fisk[nk]):
                 status = ST_PRITJE
@@ -574,6 +581,22 @@ def rakordo(financa_path, financa_sheet, portal_path, portal_sheet,
         problemet.append(problem if tipi != 'both' else 'Vlerë e ndryshme')
         shenimet.append(shenim)
     merged['Status'] = statuset
+    merged['Shenim'] = shenimet
+    # NIVF e gabuar te Financa: e njëjta datë/NIPT/vlerë del si "mungon" në të dyja anët
+    ana_fin = merged.index[merged['Status'] == ST_MUNGON_PORTAL]
+    ana_port = list(merged.index[merged['Status'] == ST_MUNGON_FIN])
+    for i in ana_fin:
+        for j in ana_port:
+            a, b = merged.loc[i], merged.loc[j]
+            if (a['NIPT'] == b['NIPT'] and pd.notna(a['NIPT']) and a['Data'] == b['Data']
+                    and abs(a['Vlera_Financa'] - b['Vlera_Portal']) <= TOLERANCE):
+                merged.at[i, 'Shenim'] = (f"Duket i njëjti dokument me një faturë të Portalit (NIVF {b['NumriSerial']}); "
+                                          f"Financa ka NIVF '{a['NumriSerial']}'. Korrigjo NIVF-në te Financa.")
+                merged.at[j, 'Shenim'] = (f"Duket i njëjti dokument me faturën {a['NrFature']} të Financa-s, "
+                                          f"që ka NIVF '{a['NumriSerial']}' (e gabuar).")
+                ana_port.remove(j)
+                break
+    shenimet = merged['Shenim'].tolist()
     merged['Problemi'] = problemet
     merged['Shenim'] = shenimet
     merged['AdjDiff'] = adj_diffs
@@ -590,7 +613,7 @@ def rakordo(financa_path, financa_sheet, portal_path, portal_sheet,
             'Vlera_Financa': pa_serial['Vlera'], 'Vlera_Portal': np.nan, 'Diferenca': pa_serial['Vlera'],
             'Problemi': 'Pa serial - nuk del ne SC', 'Status': 'PA NIVF (jashtë llogaritjes)',
             'Shenim': 'Faturë pa NIVF; nuk dalin në Portal, hiqet nga F5 e korrigjuar.',
-            'Kush_ka_me_shume': '', '_merge': 'left_only', 'AdjDiff': 0.0,
+            'Kush_ka_me_shume': '', '_merge': 'left_only', 'AdjDiff': 0.0, '_occ': 0,
         })
         subjekt_diff = pd.concat([subjekt_diff, pa_rows], ignore_index=True)
 
@@ -733,7 +756,7 @@ def rakordo(financa_path, financa_sheet, portal_path, portal_sheet,
     kategori_diff = krahaso_kategorite_tvsh(fin_adj, port)
 
     rez = {
-        'subjekt_diff': subjekt_diff.drop(columns=['_merge', 'AdjDiff']),
+        'subjekt_diff': subjekt_diff.drop(columns=['_merge', 'AdjDiff', '_occ'], errors='ignore'),
         'cmp': cmp,
         'operator_report': operator_report,
         'detaje_operatori': detaje_operatori,
