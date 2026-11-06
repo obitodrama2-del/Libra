@@ -10,7 +10,7 @@ from rakordim import rakordo, shkruaj_raportin
 from blerje import rakordo_blerje, shkruaj_raportin_blerje, emrat_libri_me_sc
 from rakordim import eshte_karburant
 
-VERSIONI = "v1.10 (06.11.2026)"  # rrite numrin sa herë që bëhet një ndryshim
+VERSIONI = "v1.11 (06.11.2026)"  # rrite numrin sa herë që bëhet një ndryshim
 
 
 def versioni_git():
@@ -183,7 +183,7 @@ if run and mode == "Blerje":
         m3.metric("Fatura Financa / Portal", f"{rez['n_fin']} / {rez['n_port']}")
         st.download_button("Shkarko raportin (Excel)", data=buf, file_name="Rakordim_Blerje.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        tabs = st.tabs(["Ura e blerjeve", "Veprime për t'u bërë", "Faturat jo OK", "Kontrolle", "Kategori TVSH", "Furnitoret", "Libri Financa me SC", "Kontroll"])
+        tabs = st.tabs(["Ura e blerjeve", "Veprime për t'u bërë", "Faturat jo OK", "Kontrolle", "Kategori TVSH", "Furnitoret", "Libri Financa me SC", "TVSH pa kreditim", "Kontroll"])
         with tabs[0]:
             st.dataframe(shfaq_statuse(rez['ura']), use_container_width=True)
         with tabs[1]:
@@ -207,4 +207,11 @@ if run and mode == "Blerje":
                             or eshte_karburant(r.get('Artikujt_SC')) else '')] * len(r), axis=1),
                 use_container_width=True)
         with tabs[7]:
+            st.caption("Shpenzime për të cilat TVSH nuk lejohet të kreditohet (karburant, pritje/përcjellje, publicitet/reklama): a është kredituar te Financa ose te Self Care.")
+            if len(rez['pa_kreditim']):
+                st.dataframe(rez['pa_kreditim_permbledhje'], use_container_width=True)
+                st.dataframe(shfaq_statuse(rez['pa_kreditim']), use_container_width=True)
+            else:
+                st.info("Nuk u gjet asnjë faturë në këto kategori.")
+        with tabs[8]:
             st.dataframe(rez['kontroll'], use_container_width=True)

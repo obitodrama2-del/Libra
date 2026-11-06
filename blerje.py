@@ -323,6 +323,11 @@ def rakordo_blerje(financa_path, financa_sheet, portal_path, portal_sheet, cutof
         'diferenca': total_diff, 'e_pashpjeguar': e_pashpjeguar, 'cutoff': cutoff,
         'paralajmerime': paralajmerime, 'n_fin': len(fin), 'n_port': len(port),
     }
+    if len(libri_me_sc):
+        libri_me_sc.insert(libri_me_sc.columns.get_loc('F|a'), 'Kategoria_Pa_Kreditim',
+                           libri_me_sc.apply(lambda r: klasifiko_pa_kreditim(r)[0] or None, axis=1))
+    pa_kred, pa_kred_perm = _pa_kreditim(libri_me_sc)
+    rez['pa_kreditim'], rez['pa_kreditim_permbledhje'] = pa_kred, pa_kred_perm
     rez['n_karburant'] = int(libri_me_sc.apply(lambda r: any(
         eshte_karburant(r.get(c), emer=True) for c in ('Pershkrimi_Llogarise', 'F|ç', 'S|ç')) or eshte_karburant(r.get('Artikujt_SC')),
         axis=1).sum()) if len(libri_me_sc) else 0
@@ -563,6 +568,78 @@ def _shkruaj_libri_me_sc(w, df):
             ws.cell(row=2, column=c, value=etiketa).font = Font(name='Arial', bold=True)
 
 
+# Shpenzime për të cilat TVSH nuk lejohet të kreditohet: (emri, prefikset e llogarive, regex për përshkrim/furnitor/artikuj).
+# Për të shtuar një kategori të re, shtohet një rresht këtu.
+KATEGORI_PA_KREDITIM = [
+    ('Karburant', ('6041',), rakordim.FUEL_RE),
+    ('Pritje / përcjellje', ('654',), re.compile(r'pritje|perfaqesim|percjellje|represent')),
+    ('Publicitet / reklama', ('624',), re.compile(r'publicitet|reklam|advertis')),
+]
+
+
+def _tekst_norm(x):
+    import unicodedata
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return ''
+    t = unicodedata.normalize('NFKD', str(x).lower())
+    return ''.join(ch for ch in t if not unicodedata.combining(ch))
+
+
+def klasifiko_pa_kreditim(row):
+    """Kthen (kategoritë, baza e klasifikimit) për një rresht të fletës Libri_Financa_me_SC."""
+    llogari = [k.strip() for k in str(row.get('Llogaria') or '').split(';') if k.strip()]
+    pershkrim = _tekst_norm(row.get('Pershkrimi_Llogarise'))
+    furnitor = _tekst_norm(row.get('F|ç')) + ' ' + _tekst_norm(row.get('S|ç'))
+    artikuj = [a for a in re.sub(r'^\[\d+ artikuj\]\s*', '', str(row.get('Artikujt_SC') or '')).split('; ') if a]
+    kategorite, bazat = [], []
+    for emri, prefikse, regex in KATEGORI_PA_KREDITIM:
+        baza = None
+        kod = next((k for k in llogari if k.startswith(prefikse)), None)
+        if kod:
+            baza = f'llogari {kod}'
+        elif regex.search(pershkrim):
+            baza = 'përshkrimi i llogarisë'
+        elif regex.search(furnitor) or (emri == 'Karburant' and rakordim.FUEL_EMRI_RE.search(furnitor)):
+            baza = 'emri i furnitorit'
+        else:
+            # artikuj: për karburantin nuk numërohen pjesët e makinës (filtra)
+            hit = [a for a in artikuj if regex.search(_tekst_norm(a)) and not (emri == 'Karburant' and 'filt' in _tekst_norm(a))]
+            if hit:
+                baza = 'artikuj SC'
+        if baza:
+            kategorite.append(emri)
+            bazat.append(baza)
+    return ' + '.join(kategorite), ' + '.join(bazat)
+
+
+def _pa_kreditim(libri, tol=TOLERANCE):
+    """Faturat e kategorive ku TVSH nuk lejohet të kreditohet dhe a është kredituar (Financa / Self Care)."""
+    if libri.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    kl = libri.apply(klasifiko_pa_kreditim, axis=1, result_type='expand')
+    d = libri.assign(Kategoria=kl[0], Baza=kl[1])
+    d = d[d['Kategoria'] != '']
+    cols = {'Kategoria': 'Kategoria', 'Baza': 'Baza_e_klasifikimit', 'F|a': 'NrFature_Financa', 'F|b': 'NIVF', 'F|c': 'Data',
+            'F|ç': 'Furnitori', 'F|dh': 'NIPT', 'Llogaria': 'Llogaria', 'Pershkrimi_Llogarise': 'Pershkrimi_Llogarise',
+            'Artikujt_SC': 'Artikujt_SC', 'F|e': 'Totali_Financa', 'S|e': 'Totali_SC',
+            'F|ë': 'Jashte_Zbritjes_Financa', 'S|ë': 'Jashte_Zbritjes_SC',
+            'TVSH_Zbritshme_Financa': 'TVSH_Kredituar_Financa', 'TVSH_Zbritshme_SC': 'TVSH_Kredituar_SC'}
+    out = d[[c for c in cols if c in d.columns]].rename(columns=cols).copy()
+    tf, ts = out['TVSH_Kredituar_Financa'].fillna(0), out['TVSH_Kredituar_SC'].fillna(0)
+    out['Kreditim_i_gabuar'] = ['PO · Financa dhe SC' if a > tol and b > tol else 'PO · Financa' if a > tol else
+                                'PO · Self Care' if b > tol else 'JO' for a, b in zip(tf, ts)]
+    out['Status'] = ['KONTROLLO TVSH' if g != 'JO' else 'OK' for g in out['Kreditim_i_gabuar']]
+    out['_a'] = tf.abs() + ts.abs()
+    out = out.sort_values(['_a'], ascending=False, kind='stable').drop(columns='_a').reset_index(drop=True)
+    perm = []
+    for emri, _, _ in KATEGORI_PA_KREDITIM:
+        g = out[out['Kategoria'].str.contains(emri, regex=False)]
+        perm.append({'Kategoria': emri, 'Fatura': len(g), 'Totali_Financa': g['Totali_Financa'].sum(),
+                     'TVSH_Kredituar_Financa': g['TVSH_Kredituar_Financa'].sum(), 'TVSH_Kredituar_SC': g['TVSH_Kredituar_SC'].fillna(0).sum(),
+                     'Fatura_me_kreditim_gabim': int((g['Kreditim_i_gabuar'] != 'JO').sum())})
+    return out, pd.DataFrame(perm)
+
+
 def _kontrolle(fin, port, cifte_info, f_cift, tol):
     rows = []
     # Serial i pavlefshëm në Financa
@@ -653,6 +730,12 @@ def _veprimet(rez):
     for furn, g in kt.groupby('Furnitori'):
         v.append((4, f"Vendos kategorinë TVSH të {furn}", f"{len(g)} fatura; TVSH e zbritshme: Financa {g['TVSH_Zbritshme_Financa'].sum():,.0f}, "
                                                           f"Portali {g['TVSH_Zbritshme_Portal'].sum():,.0f}", g['Diferenca_TVSH'].sum()))
+    pk = rez.get('pa_kreditim')
+    if pk is not None and len(pk):
+        for _, r in pk[pk['Kreditim_i_gabuar'].isin(['PO · Financa', 'PO · Financa dhe SC'])].iterrows():
+            v.append((2, f"Hiq TVSH nga kreditimi te Financa për faturën {r['NrFature_Financa']} ({r['Kategoria']})",
+                      f"{r['Furnitori']}, {fmt_data(r['Data'])}. Llogaria {r['Llogaria'] or '?'}; TVSH e kredituar {r['TVSH_Kredituar_Financa']:,.0f}.",
+                      r['TVSH_Kredituar_Financa']))
     for _, r in f[f['Statusi'] == ST_VIT].iterrows():
         v.append((5, f"Kontrollo periudhën e faturës së vitit të kaluar {r['NrFature']} (NIVF {r['NIVF']})",
                   f"{r['Furnitori']}, {fmt_data(r['Data'])}", r['Efekti']))
@@ -674,6 +757,9 @@ def _permbledhja(rez):
         *([f"{int((rez['libri_me_sc']['Magazina'] == 'PA MAGAZINË').sum())} fatura të librit të Financa-s janë pa magazinë (regjistruar direkt në llogari); "
            f"shih fletën 'Libri_Financa_me_SC' (rreshtat me ngjyrë portokalli, me numrin dhe përshkrimin e llogarisë)."]
           if len(rez['libri_me_sc']) and 'Magazina' in rez['libri_me_sc'].columns else []),
+        *([f"TVSH që nuk lejohet të kreditohet ({r['Kategoria']}): {r['Fatura']} fatura, TVSH e kredituar Financa {r['TVSH_Kredituar_Financa']:,.0f}, "
+           f"Self Care {r['TVSH_Kredituar_SC']:,.0f}; {r['Fatura_me_kreditim_gabim']} me kreditim për t'u kontrolluar (fleta 'TVSH_Pa_Kreditim')."
+           for _, r in rez['pa_kreditim_permbledhje'].iterrows() if r['Fatura']] if len(rez.get('pa_kreditim_permbledhje', [])) else []),
         *([f"{rez['n_karburant']} fatura lidhen me karburantin (shkronja të kuqe)."] if rez.get('n_karburant') else []),
         f"TVSH 20% e zbritshme: Financa {rez['tvsh_totale']['Financa']:,.0f}, Portali {rez['tvsh_totale']['Portali']:,.0f}, "
         f"diferenca {rez['tvsh_totale']['Diferenca']:,.0f}.",
@@ -697,6 +783,9 @@ def shkruaj_raportin_blerje(rez, out):
         rez['kategori_tvsh'].rename(columns={'Statusi': 'Status'}).to_excel(w, sheet_name='Kategori_TVSH', index=False)
         rez['furnitoret'].to_excel(w, sheet_name='Furnitoret', index=False)
         _shkruaj_libri_me_sc(w, rez['libri_me_sc'])
+        if len(rez['pa_kreditim']):
+            rez['pa_kreditim_permbledhje'].to_excel(w, sheet_name='TVSH_Pa_Kreditim_Permbl', index=False)
+            rez['pa_kreditim'].to_excel(w, sheet_name='TVSH_Pa_Kreditim', index=False)
     if hasattr(out, 'seek'):
         out.seek(0)
     format_workbook(out)
