@@ -8,6 +8,7 @@ import re
 import numpy as np
 import pandas as pd
 
+import rakordim
 from rakordim import (TOLERANCE, MUAJT, fmt_data, kush_ka_me_shume, fleta_default,
                       emri_muajit, muaji_kryesor, format_workbook, STATUS_FILLS)
 
@@ -149,7 +150,8 @@ def _cift_anulues(rows_df, tol=TOLERANCE):
     return cifte
 
 
-def rakordo_blerje(financa_path, financa_sheet, portal_path, portal_sheet, cutoff=None, tol=TOLERANCE):
+def rakordo_blerje(financa_path, financa_sheet, portal_path, portal_sheet, cutoff=None, tol=TOLERANCE,
+                   eksport_financa_path=None):
     fin = parse_libri_blerjes(financa_path, financa_sheet)
     port = parse_libri_blerjes(portal_path, portal_sheet)
 
@@ -194,10 +196,12 @@ def rakordo_blerje(financa_path, financa_sheet, portal_path, portal_sheet, cutof
     rrumbullakime = 0.0
     n_rrumb = 0
     cifte_info = []
+    status_fin = {}
     for i, (j, metoda) in f_cift.items():
         f, p = fin.loc[i], port.loc[j]
         d = f['Vlera'] - p['Vlera']
         cifte_info.append((i, j, metoda, d))
+        status_fin[i] = ST_OK
         if abs(d) <= tol:
             rrumbullakime += d
             n_rrumb += 1
@@ -208,24 +212,29 @@ def rakordo_blerje(financa_path, financa_sheet, portal_path, portal_sheet, cutof
         if kredi:
             k = kredi[0]
             kredi_perdorur.add(k)
+            status_fin[i] = ST_NETO
             rresht(f['NrFature'], p['NumriSerial'], f['Data'], f['Furnitori'], f['NIPT'], f['Vlera'], p['Vlera'], d, ST_NETO,
                    f"Financa e ka faturën neto nga kredia {kredi_port.at[k, 'NrFature']} ({kredi_port.at[k, 'Vlera']:,.0f}) që Portali e ka të ndarë.", metoda)
             rresht(kredi_port.at[k, 'NrFature'], kredi_port.at[k, 'NumriSerial'], kredi_port.at[k, 'Data'], kredi_port.at[k, 'Furnitori'],
                    kredi_port.at[k, 'NIPT'], None, kredi_port.at[k, 'Vlera'], -kredi_port.at[k, 'Vlera'], ST_NETO,
                    'Kredi vetëm në Portal; përbën një me faturën e regjistruar neto në Financa. Efekti total 0.')
         else:
+            status_fin[i] = ST_DIFERENCE
             rresht(f['NrFature'], p['NumriSerial'], f['Data'], f['Furnitori'], f['NIPT'], f['Vlera'], p['Vlera'], d, ST_DIFERENCE,
                    f"Diferencë vlere {d:,.0f} mes faturave të çiftuara.", metoda)
 
     for i in vetem_fin.index:
         r = fin.loc[i]
         if i in anulohen_idx_f:
+            status_fin[i] = ST_ANULOHET
             rresht(r['NrFature'], r['NumriSerial'], r['Data'], r['Furnitori'], r['NIPT'], r['Vlera'], None, r['Vlera'], ST_ANULOHET,
                    'Dy rreshta me shumë të kundërt të të njëjtit furnitor; neto 0.')
         elif cutoff is not None and pd.notna(r['Data']) and r['Data'] > cutoff:
+            status_fin[i] = ST_PAS
             rresht(r['NrFature'], r['NumriSerial'], r['Data'], r['Furnitori'], r['NIPT'], r['Vlera'], None, r['Vlera'], ST_PAS,
                    f"Data pas {fmt_data(cutoff)} (data e fundit në librin SC).")
         else:
+            status_fin[i] = ST_MUNGON_PORTAL
             rresht(r['NrFature'], r['NumriSerial'], r['Data'], r['Furnitori'], r['NIPT'], r['Vlera'], None, r['Vlera'], ST_MUNGON_PORTAL)
 
     for j in vetem_port.index:
@@ -279,16 +288,171 @@ def rakordo_blerje(financa_path, financa_sheet, portal_path, portal_sheet, cutof
 
     kontrolle = _kontrolle(fin, port, cifte_info, f_cift, tol)
     kategori_tvsh, tvsh_totale = _kategori_tvsh(fin, port, cifte_info, tol)
+    furnitoret = _furnitoret(fin, port, fat, tol)
+    libri_me_sc, pa_magazine = _libri_me_sc(fin, port, f_cift, status_fin, eksport_financa_path, tol)
+    if eksport_financa_path is not None and len(libri_me_sc):
+        nuk = int((libri_me_sc['Magazina'] == 'NUK GJENDET NË SKEDAR').sum())
+        if nuk:
+            paralajmerime.append(f"{nuk} fatura të librit të Financa-s nuk u gjetën në skedarin e eksportit (Faturime blerje); "
+                                 "për to nuk dihet nëse janë me magazinë.")
 
     rez = {
         'faturat': fat, 'ura': ura, 'kontroll': kontroll, 'kontrolle': kontrolle,
-        'kategori_tvsh': kategori_tvsh, 'tvsh_totale': tvsh_totale,
+        'kategori_tvsh': kategori_tvsh, 'tvsh_totale': tvsh_totale, 'furnitoret': furnitoret, 'libri_me_sc': libri_me_sc, 'pa_magazine': pa_magazine,
         'diferenca': total_diff, 'e_pashpjeguar': e_pashpjeguar, 'cutoff': cutoff,
         'paralajmerime': paralajmerime, 'n_fin': len(fin), 'n_port': len(port),
     }
     rez['veprime'] = _veprimet(rez)
     rez['permbledhje'] = _permbledhja(rez)
     return rez
+
+
+def _furnitoret(fin, port, fat, tol):
+    """Një rresht për çdo furnitor (sipas NIPT): fatura dhe shuma në dy anët, diferenca, sa fatura nuk përputhen."""
+    def celesi(df):
+        return df['NIPT'].fillna('pa NIPT: ' + df['Furnitori'].fillna('?').astype(str))
+    f, p = fin.assign(K=celesi(fin)), port.assign(K=celesi(port))
+    emri = pd.concat([f[['K', 'Furnitori']], p[['K', 'Furnitori']]]).dropna().groupby('K')['Furnitori'].agg(lambda x: x.mode().iloc[0])
+    gf = f.groupby('K')['Vlera'].agg(['count', 'sum']).rename(columns={'count': 'Fatura_Financa', 'sum': 'Shuma_Financa'})
+    gp = p.groupby('K')['Vlera'].agg(['count', 'sum']).rename(columns={'count': 'Fatura_Portal', 'sum': 'Shuma_Portal'})
+    t = pd.concat([gf, gp], axis=1).fillna(0)
+    t['Diferenca'] = t['Shuma_Financa'] - t['Shuma_Portal']
+    t['Kush_ka_me_shume'] = t['Diferenca'].map(kush_ka_me_shume)
+    fat_k = fat.assign(K=fat['NIPT'].fillna('pa NIPT: ' + fat['Furnitori'].fillna('?').astype(str)))
+    jo_ok = fat_k[~fat_k['Statusi'].isin([ST_ANULOHET, ST_NETO])].groupby('K').size()
+    t['Fatura_Jo_OK'] = jo_ok.reindex(t.index).fillna(0).astype(int)
+    t.insert(0, 'Furnitori', emri.reindex(t.index))
+    t.insert(1, 'NIPT', [k if not str(k).startswith('pa NIPT') else None for k in t.index])
+    t['Status'] = t.apply(lambda r: ST_OK if abs(r['Diferenca']) <= tol and r['Fatura_Jo_OK'] == 0 else
+                          (ST_DIFERENCE if abs(r['Diferenca']) > tol else ST_PA_SHPJEGIM), axis=1)
+    t['Status'] = t['Status'].replace({ST_PA_SHPJEGIM: 'KONTROLLO FATURAT'})
+    t['_a'] = t['Diferenca'].abs()
+    t = t.sort_values(['_a', 'Fatura_Jo_OK'], ascending=False).drop(columns='_a').reset_index(drop=True)
+    return t
+
+
+def _nr_norm(x):
+    """Numri i faturës i normalizuar për krahasim (pa zero përpara, pa dallim shkronjash); datat e shtrembëruara japin ''."""
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return ''
+    t = str(x).strip().lower()
+    if re.match(r'^\d{4}-\d{2}-\d{2}', t):
+        return ''
+    if re.fullmatch(r'0*\d+', t):
+        t = t.lstrip('0') or '0'
+    return t
+
+
+def _kod(x):
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return ''
+    if isinstance(x, float) and x.is_integer():
+        return str(int(x))
+    return str(x).strip()
+
+
+def parse_eksport_blerje(path):
+    """
+    Eksporti i faturave të blerjes nga Financa (një rresht për çdo artikull/llogari të faturës).
+    TIPKLL = 'K' është artikull (me magazinë, KMAG); TIPKLL = 'L' është llogari kontabël (pa magazinë):
+    KARTLLG = numri i llogarisë, PERSHKRIM = përshkrimi. Kthen një rresht për faturë.
+    """
+    if hasattr(path, 'seek'):
+        path.seek(0)
+    d = pd.read_excel(path)
+    kerkohen = ['NRRENDOR', 'NRDOK', 'NRDSHOQ', 'NIPT', 'SHENIM1', 'VLERTOT', 'TIPKLL', 'KARTLLG', 'PERSHKRIM']
+    mungon = [c for c in kerkohen if c not in d.columns]
+    if mungon:
+        raise ValueError(f"Eksporti i Financa-s nuk ka kolonat: {', '.join(mungon)}.")
+    rows = []
+    for nr, g in d.groupby('NRRENDOR', sort=False):
+        r = g.iloc[0]
+        llogari = g[g['TIPKLL'].astype(str).str.strip() == 'L']
+        artikuj = g[g['TIPKLL'].astype(str).str.strip() == 'K']
+        kursi = r.get('KURSI')
+        eur = str(r.get('KMON', '')).strip().upper() == 'EUR' and pd.notna(kursi) and kursi
+        vlera = pd.to_numeric(r['VLERTOT'], errors='coerce')
+        porosi = {}
+        for _, l in llogari.iterrows():
+            k = (_kod(l['KARTLLG']), str(l['PERSHKRIM']).strip())
+            porosi[k] = porosi.get(k, 0) + (pd.to_numeric(l.get('VLERABS'), errors='coerce') or 0)
+        magazina = sorted({str(m).strip() for m in artikuj.get('KMAG', pd.Series(dtype=object)).dropna()})
+        nipt = r['NIPT']
+        rows.append({
+            'NrDok': _kod(r['NRDOK']), 'NrDshoq': r['NRDSHOQ'], 'Furnitori': r['SHENIM1'],
+            'NIPT': str(nipt).strip().upper() if pd.notna(nipt) else '',
+            'Vlera': vlera, 'Vlera_Lek': vlera * float(kursi) if eur else vlera,
+            'Magazina': 'ME MAGAZINË' if len(artikuj) else ('PA MAGAZINË' if len(llogari) else 'PA RRESHTA'),
+            'Magazinat': ', '.join(magazina),
+            'Llogaria': '; '.join(dict.fromkeys(k[0] for k in porosi)),
+            'Pershkrimi': '; '.join(k[1] for k in porosi),
+        })
+    return pd.DataFrame(rows)
+
+
+def _cifto_eksport(fin, inv, tol=TOLERANCE):
+    """Çifton rreshtat e librit të Financa-s me faturat e eksportit: NIPT + numër fature + vlerë; NIPT + vlerë; NIPT + numër."""
+    inv = inv.assign(_nr=inv['NrDshoq'].map(_nr_norm))
+    perdorur, res = set(), {}
+    f_nipt = fin['NIPT'].fillna('').astype(str).str.upper()
+    f_nr = fin['NrFature'].map(_nr_norm)
+
+    def diff(i, j):
+        return min(abs(fin.at[i, 'Vlera'] - inv.at[j, 'Vlera']), abs(fin.at[i, 'Vlera'] - inv.at[j, 'Vlera_Lek']))
+
+    for faza in (1, 2, 3):
+        for i in fin.index:
+            if i in res:
+                continue
+            kand = [j for j in inv.index[inv['NIPT'] == f_nipt[i]] if j not in perdorur]
+            if faza in (1, 3):
+                kand = [j for j in kand if f_nr[i] and inv.at[j, '_nr'] == f_nr[i]]
+            if faza in (1, 2):
+                kand = [j for j in kand if diff(i, j) <= tol]
+            if kand:
+                j = min(kand, key=lambda j: diff(i, j))
+                res[i] = (j, {1: 'NIPT + nr. fature + vlerë', 2: 'NIPT + vlerë', 3: 'NIPT + nr. fature (vlerë ndryshe)'}[faza])
+                perdorur.add(j)
+    return res
+
+
+def _libri_me_sc(fin, port, f_cift, status_fin, eksport_path, tol):
+    """Fleta 'Libri_Financa_me_SC': çdo rresht i librit të Financa-s me ekuivalenten nga Self Care dhe, nga eksporti i Financa-s, magazina/llogaria."""
+    inv = parse_eksport_blerje(eksport_path) if eksport_path is not None else None
+    ekspo = _cifto_eksport(fin, inv, tol) if inv is not None else {}
+    rows = []
+    for i, f in fin.iterrows():
+        j = f_cift.get(i, (None, ''))[0]
+        p = port.loc[j] if j is not None else None
+        r = {
+            'NrFature_Financa': f['NrFature'], 'NIVF_Financa': f['NumriSerial'] if isinstance(f['NumriSerial'], str) else 'pa NIVF',
+            'Data': f['Data'], 'Furnitori': f['Furnitori'], 'NIPT': f['NIPT'], 'Vlera_Financa': f['Vlera'],
+            'NrFature_SC': p['NrFature'] if p is not None else None,
+            'NIVF_SC': p['NumriSerial'] if p is not None else None,
+            'Data_SC': p['Data'] if p is not None else None,
+            'Vlera_SC': p['Vlera'] if p is not None else None,
+            'Diferenca': (f['Vlera'] - p['Vlera']) if p is not None else None,
+            'Metoda_Ciftimit': f_cift[i][1] if p is not None else None,
+            'Status': status_fin.get(i, ''),
+        }
+        if inv is not None:
+            e = inv.loc[ekspo[i][0]] if i in ekspo else None
+            r.update({
+                'Magazina': e['Magazina'] if e is not None else 'NUK GJENDET NË SKEDAR',
+                'Magazinat': e['Magazinat'] if e is not None else None,
+                'Nr_Dok_Financa': e['NrDok'] if e is not None else None,
+                'Llogaria': (e['Llogaria'] or None) if e is not None else None,
+                'Pershkrimi_Llogarise': (e['Pershkrimi'] or None) if e is not None else None,
+            })
+        rows.append(r)
+    df = pd.DataFrame(rows)
+    if inv is None or df.empty:
+        return df, pd.DataFrame(columns=['Llogaria', 'Pershkrimi_Llogarise', 'Fatura', 'Vlera_Financa'])
+    pa = df[df['Magazina'] == 'PA MAGAZINË']
+    pa_llog = (pa.groupby(['Llogaria', 'Pershkrimi_Llogarise'], dropna=False)
+               .agg(Fatura=('NrFature_Financa', 'size'), Vlera_Financa=('Vlera_Financa', 'sum')).reset_index()
+               .sort_values('Vlera_Financa', key=abs, ascending=False))
+    return df, pa_llog
 
 
 def _kontrolle(fin, port, cifte_info, f_cift, tol):
@@ -366,7 +530,7 @@ def _veprimet(rez):
     if n_pas:
         v.append((1, f"Rigjenero librin SC pas {fmt_data(rez['cutoff'])}", f"{n_pas} fatura Financa me datë pas librit SC.", None))
     for _, r in f[f['Statusi'] == ST_MUNGON_FIN].iterrows():
-        v.append((2, f"Fut/kontrollo te Financa faturën {r['NrFature']} (NIVF {r['NIVF']})", f"{r['Furnitori']}, {fmt_data(r['Data'])}", r['Efekti']))
+        v.append((2, f"Fut/kontrollo te Financa faturën {r['NrFature']} (NIVF {r['NIVF']})", f"{r['Furnitori']}, {fmt_data(r['Data'])}. Nuk e gjej në librin e Financa-s të ngarkuar: kontrollo nëse është regjistruar në muaj tjetër ose nuk është futur ende.", r['Efekti']))
     for _, r in f[f['Statusi'] == ST_MUNGON_PORTAL].iterrows():
         v.append((2, f"Kontrollo në Portal faturën {r['NrFature']} (NIVF {r['NIVF']})", f"{r['Furnitori']}, {fmt_data(r['Data'])}", r['Efekti']))
     for _, r in f[f['Statusi'] == ST_DIFERENCE].iterrows():
@@ -384,7 +548,7 @@ def _veprimet(rez):
     for _, r in f[f['Statusi'] == ST_VIT].iterrows():
         v.append((5, f"Kontrollo periudhën e faturës së vitit të kaluar {r['NrFature']} (NIVF {r['NIVF']})",
                   f"{r['Furnitori']}, {fmt_data(r['Data'])}", r['Efekti']))
-    return pd.DataFrame(v, columns=['Prioriteti', 'Veprimi', 'Detaje', 'Vlera']).sort_values('Prioriteti', kind='stable').reset_index(drop=True)
+    return rakordim.rendit_veprimet(v)
 
 
 def _permbledhja(rez):
@@ -399,6 +563,9 @@ def _permbledhja(rez):
         f"Çifte që anulohen, regjistrim neto dhe rrumbullakime kanë efekt 0 ose të papërfillshëm.",
         ("Çdo lek është i shpjeguar (e pashpjeguar = 0)." if abs(rez['e_pashpjeguar']) <= TOLERANCE
          else f"Kujdes: mbeten {rez['e_pashpjeguar']:,.0f} lekë të pashpjeguara."),
+        *([f"{int((rez['libri_me_sc']['Magazina'] == 'PA MAGAZINË').sum())} fatura të librit të Financa-s janë pa magazinë (regjistruar direkt në llogari); "
+           f"shih fletën 'Libri_Financa_me_SC' (rreshtat me ngjyrë portokalli, me numrin dhe përshkrimin e llogarisë)."]
+          if len(rez['libri_me_sc']) and 'Magazina' in rez['libri_me_sc'].columns else []),
         f"TVSH 20% e zbritshme: Financa {rez['tvsh_totale']['Financa']:,.0f}, Portali {rez['tvsh_totale']['Portali']:,.0f}, "
         f"diferenca {rez['tvsh_totale']['Diferenca']:,.0f}.",
     ]
@@ -419,6 +586,8 @@ def shkruaj_raportin_blerje(rez, out):
         rez['faturat'].rename(columns={'Statusi': 'Status'}).to_excel(w, sheet_name='Faturat_Jo_OK', index=False)
         rez['kontrolle'].to_excel(w, sheet_name='Kontrolle', index=False)
         rez['kategori_tvsh'].rename(columns={'Statusi': 'Status'}).to_excel(w, sheet_name='Kategori_TVSH', index=False)
+        rez['furnitoret'].to_excel(w, sheet_name='Furnitoret', index=False)
+        rez['libri_me_sc'].to_excel(w, sheet_name='Libri_Financa_me_SC', index=False)
     if hasattr(out, 'seek'):
         out.seek(0)
     format_workbook(out)
