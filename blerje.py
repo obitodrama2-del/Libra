@@ -63,7 +63,7 @@ def parse_libri_blerjes(path, sheet_name):
     first = raw.iloc[:, 0].astype(str).str.strip().str.lower()
     ndalo = raw.index[(raw.index >= start) & first.str.startswith(('shuma totale', 'kutia', 'shpjegim'))]
     stop = ndalo[0] if len(ndalo) else len(raw)
-    cols = {0: 'NrFature', 1: 'NumriSerial', 2: 'Data', 3: 'Furnitori', 5: 'NIPT', 6: 'Vlera',
+    cols = {0: 'NrFature', 1: 'NumriSerial', 2: 'Data', 3: 'Furnitori', 4: 'Rrethi', 5: 'NIPT', 6: 'Vlera',
             7: 'TvshJashtZbritjes', 19: 'Baza20', 20: 'Tvsh20'}
     data = raw.iloc[start:stop, list(cols.keys())].copy()
     data.columns = list(cols.values())
@@ -466,8 +466,29 @@ def _cifto_eksport(fin, inv, tol=TOLERANCE):
     return res
 
 
+# Kolonat e librit të blerjeve sipas radhës së tij (kodi, emri, burimi në të dhënat e lexuara)
+KOLONAT_LIBRI = ([('a', 'Nr. faturës', 'NrFature'), ('b', 'Numri serial', 'NumriSerial'), ('c', 'Data', 'Data'),
+                  ('ç', 'Emri tregtar / personi', 'Furnitori'), ('d', 'Rrethi', 'Rrethi'), ('dh', 'NIPT / Kodi fermerit', 'NIPT')]
+                 + [(kodi, emri, f'K{idx}') for idx, kodi, emri in KOLONAT_LIBRIT])
+KOLONAT_ANALIZA = ['Status', 'Diferenca', 'Metoda_Ciftimit', 'Magazina', 'Magazinat', 'Nr_Dok_Financa', 'Llogaria',
+                   'Pershkrimi_Llogarise', 'Artikujt_SC', 'Norma_TVSH_Artikujve_SC', 'TVSH_Zbritshme_Financa',
+                   'TVSH_Zbritshme_SC', 'Diferenca_TVSH']
+
+
+def emrat_libri_me_sc(df, me_prefiks=True):
+    """Emrat e kolonave të fletës: 'F|a' -> 'a Nr. faturës' (Excel, me rreshtin e bllokut sipër) ose 'Financa · a Nr. faturës' (ekran, unike)."""
+    emrat = {}
+    for ana, prefiks in (('F', 'Financa'), ('S', 'Self Care')):
+        for kodi, emri, _ in KOLONAT_LIBRI:
+            emrat[f'{ana}|{kodi}'] = (f'{prefiks} · ' if me_prefiks else '') + f'{kodi} {emri}'
+    return {c: emrat.get(c, c) for c in df.columns}
+
+
 def _libri_me_sc(fin, port, f_cift, status_fin, eksport_path, tol, artikujt=None):
-    """Fleta 'Libri_Financa_me_SC': çdo rresht i librit të Financa-s me ekuivalenten nga Self Care dhe, nga eksporti i Financa-s, magazina/llogaria."""
+    """
+    Fleta 'Libri_Financa_me_SC': për çdo rresht të librit të Financa-s, tri blloqe: analiza (statusi, magazina/llogaria,
+    artikujt, TVSH e zbritshme), rreshti i plotë i Financa-s si në libër (a ... z) dhe rreshti i plotë i ekuivalentes nga Self Care.
+    """
     inv = parse_eksport_blerje(eksport_path) if eksport_path is not None else None
     ekspo = _cifto_eksport(fin, inv, tol) if inv is not None else {}
     rows = []
@@ -475,15 +496,9 @@ def _libri_me_sc(fin, port, f_cift, status_fin, eksport_path, tol, artikujt=None
         j = f_cift.get(i, (None, ''))[0]
         p = port.loc[j] if j is not None else None
         r = {
-            'NrFature_Financa': f['NrFature'], 'NIVF_Financa': f['NumriSerial'] if isinstance(f['NumriSerial'], str) else 'pa NIVF',
-            'Data': f['Data'], 'Furnitori': f['Furnitori'], 'NIPT': f['NIPT'], 'Vlera_Financa': f['Vlera'],
-            'NrFature_SC': p['NrFature'] if p is not None else None,
-            'NIVF_SC': p['NumriSerial'] if p is not None else None,
-            'Data_SC': p['Data'] if p is not None else None,
-            'Vlera_SC': p['Vlera'] if p is not None else None,
+            'Status': status_fin.get(i, ''),
             'Diferenca': (f['Vlera'] - p['Vlera']) if p is not None else None,
             'Metoda_Ciftimit': f_cift[i][1] if p is not None else None,
-            'Status': status_fin.get(i, ''),
         }
         if inv is not None:
             e = inv.loc[ekspo[i][0]] if i in ekspo else None
@@ -504,22 +519,45 @@ def _libri_me_sc(fin, port, f_cift, status_fin, eksport_path, tol, artikujt=None
         r['TVSH_Zbritshme_Financa'] = tv_f
         r['TVSH_Zbritshme_SC'] = tv_p
         r['Diferenca_TVSH'] = (tv_f - tv_p) if tv_p is not None else None
-        for idx, kodi, emri in KOLONAT_LIBRIT:
-            r[f'Financa · {kodi} {emri}'] = f[f'K{idx}']
-        for idx, kodi, emri in KOLONAT_LIBRIT:
-            r[f'SC · {kodi} {emri}'] = p[f'K{idx}'] if p is not None else None
+        for kodi, emri, burimi in KOLONAT_LIBRI:
+            r[f'F|{kodi}'] = f[burimi] if burimi in f.index else None
+        for kodi, emri, burimi in KOLONAT_LIBRI:
+            r[f'S|{kodi}'] = (p[burimi] if burimi in p.index else None) if p is not None else None
         rows.append(r)
     df = pd.DataFrame(rows)
-    # vetëm kolonat e librit që kanë ndonjë vlerë (në Financa ose SC), për të mos mbushur fletën me zero
-    boshe = [c for c in df.columns if c.startswith(('Financa · ', 'SC · ')) and (df[c].fillna(0) == 0).all()]
-    df = df.drop(columns=boshe)
-    if inv is None or df.empty:
+    if df.empty:
+        return df, pd.DataFrame(columns=['Llogaria', 'Pershkrimi_Llogarise', 'Fatura', 'Vlera_Financa'])
+    # NIVF e munguar te Financa shfaqet si 'pa NIVF'
+    df['F|b'] = df['F|b'].where(df['F|b'].map(lambda x: isinstance(x, str)), 'pa NIVF')
+    if inv is None:
         return df, pd.DataFrame(columns=['Llogaria', 'Pershkrimi_Llogarise', 'Fatura', 'Vlera_Financa'])
     pa = df[df['Magazina'] == 'PA MAGAZINË']
     pa_llog = (pa.groupby(['Llogaria', 'Pershkrimi_Llogarise'], dropna=False)
-               .agg(Fatura=('NrFature_Financa', 'size'), Vlera_Financa=('Vlera_Financa', 'sum')).reset_index()
+               .agg(Fatura=('F|a', 'size'), Vlera_Financa=('F|e', 'sum')).reset_index()
                .sort_values('Vlera_Financa', key=abs, ascending=False))
     return df, pa_llog
+
+
+def _shkruaj_libri_me_sc(w, df):
+    """Shkruan fletën me emrat e kolonave si në libër dhe një rresht sipër që tregon blloqet."""
+    from openpyxl.styles import Font, PatternFill, Alignment
+    emri = 'Libri_Financa_me_SC'
+    nota = ("Konventa: Diferenca = Financa − Portal. Blloqet: ANALIZA (statusi, magazina/llogaria, artikujt, TVSH) | "
+            "FINANCA (rreshti i librit, kolonat a … z) | SELF CARE (ekuivalenta, kolonat a … z).")
+    # kolonat shkruhen me emra të brendshëm unikë ('F|a', 'S|a'), pastaj titujt rishkruhen si në libër
+    df.to_excel(w, sheet_name=emri, index=False, startrow=2)
+    ws = w.sheets[emri]
+    ws.cell(row=1, column=1, value=nota)
+    emrat = emrat_libri_me_sc(df, me_prefiks=False)
+    blloqe = {'F': ('FINANCA (libri)', 'DDEBF7'), 'S': ('SELF CARE (libri)', 'E2EFDA')}
+    analiza = ('ANALIZA', 'EDEDED')
+    for c, kol in enumerate(df.columns, 1):
+        ws.cell(row=3, column=c, value=emrat[kol])
+        ana = kol[0] if len(kol) > 1 and kol[1] == '|' else None
+        etiketa, ngjyra = blloqe.get(ana, analiza)
+        ws.cell(row=2, column=c).fill = PatternFill('solid', start_color=ngjyra, end_color=ngjyra)
+        if c == 1 or (c > 1 and (df.columns[c - 2][0] if len(df.columns[c - 2]) > 1 and df.columns[c - 2][1] == '|' else None) != ana):
+            ws.cell(row=2, column=c, value=etiketa).font = Font(name='Arial', bold=True)
 
 
 def _kontrolle(fin, port, cifte_info, f_cift, tol):
@@ -654,7 +692,7 @@ def shkruaj_raportin_blerje(rez, out):
         rez['kontrolle'].to_excel(w, sheet_name='Kontrolle', index=False)
         rez['kategori_tvsh'].rename(columns={'Statusi': 'Status'}).to_excel(w, sheet_name='Kategori_TVSH', index=False)
         rez['furnitoret'].to_excel(w, sheet_name='Furnitoret', index=False)
-        rez['libri_me_sc'].to_excel(w, sheet_name='Libri_Financa_me_SC', index=False)
+        _shkruaj_libri_me_sc(w, rez['libri_me_sc'])
     if hasattr(out, 'seek'):
         out.seek(0)
     format_workbook(out)
