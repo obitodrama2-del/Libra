@@ -741,13 +741,30 @@ def rakordo(financa_path, financa_sheet, portal_path, portal_sheet,
     problem_rows = []
     for _, row in cmp[cmp['Status'].isin([ST_PA_EKSPORT, ST_REALE])].iterrows():
         data_val, diff = row['Data'], row['Diferenca']
+        # Ditë me eksport: operatorët përgjegjës vijnë nga Detaje_Operatori
+        op_reale = (detaje_operatori[(detaje_operatori['Data'] == data_val) & (detaje_operatori['Status'] == ST_REALE)]
+                    if len(detaje_operatori) else detaje_operatori)
+        if len(op_reale):
+            emrat = ', '.join(f"{r['Operatori'] or r['Pika_e_shitjes_Financa']} ({r['Diferenca']:,.0f})" for _, r in op_reale.iterrows())
+            problem_rows.append({
+                'Data': data_val, 'Diferenca': diff, 'Status': row['Status'],
+                'Kush_ka_me_shume': kush_ka_me_shume(diff),
+                'Operatori(et) i identifikuar': emrat + ' (shih Detaje_Operatori)',
+                'Shuma e përputhur': op_reale['Diferenca'].sum(),
+            })
+            continue
         day_ops = fin_rand[fin_rand['Data'] == data_val].groupby('Bleresi')['Vlera'].sum().to_dict()
         combo, matched_sum = find_operator_combo(diff, day_ops)
+        if combo:
+            tekst = ', '.join(combo)
+        elif data_val in ditet_me_eksport:
+            tekst = 'Asnjë operator i vetëm nuk e shpjegon (eksporti u ngarkua; shih Detaje_Operatori)'
+        else:
+            tekst = 'Asnjë pikë shitjeje e vetme nuk e shpjegon; ngarko eksportin e ditës për kandidatët'
         problem_rows.append({
             'Data': data_val, 'Diferenca': diff, 'Status': row['Status'],
             'Kush_ka_me_shume': kush_ka_me_shume(diff),
-            'Operatori(et) i identifikuar': ', '.join(combo) if combo else
-            'Asnjë pikë shitjeje e vetme nuk e shpjegon; ngarko eksportin e ditës për kandidatët',
+            'Operatori(et) i identifikuar': tekst,
             'Shuma e përputhur': matched_sum,
         })
     operator_report = pd.DataFrame(problem_rows)
