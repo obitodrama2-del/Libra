@@ -9,7 +9,7 @@ import pandas as pd
 from rakordim import rakordo, shkruaj_raportin
 from blerje import rakordo_blerje, shkruaj_raportin_blerje
 
-VERSIONI = "v1.7 (06.11.2026)"  # rrite numrin sa herë që bëhet një ndryshim
+VERSIONI = "v1.8 (06.11.2026)"  # rrite numrin sa herë që bëhet një ndryshim
 
 
 def versioni_git():
@@ -97,10 +97,14 @@ if mode == "Shitje":
     )
 
 eksport_financa_file = None
+artikujt_sc_file = None
 if mode == "Blerje":
     eksport_financa_file = st.file_uploader(
         "Opsionale: eksporti i faturave të blerjes nga Financa (Faturime blerje, .xls/.xlsx) - tregon cilat fatura janë me magazinë dhe, për ato pa magazinë, llogarinë e regjistrimit",
         type=["xls", "xlsx"], key="eksport_financa")
+    artikujt_sc_file = st.file_uploader(
+        "Opsionale: libri i blerjeve me artikuj nga Self Care (fleta 'Artikujt') - vendos në një qelizë artikujt e çdo fature",
+        type=["xlsx"], key="artikujt_sc")
 
 run = st.button("Krahaso", type="primary", disabled=not (financa_file and portal_file))
 
@@ -163,7 +167,8 @@ if run and mode == "Blerje":
     try:
         with st.spinner("Duke rakorduar blerjet..."):
             rez = rakordo_blerje(financa_file, financa_sheet, portal_file, portal_sheet, cutoff=cutoff,
-                                  eksport_financa_path=eksport_financa_file)
+                                  eksport_financa_path=eksport_financa_file,
+                                  artikujt_sc_path=artikujt_sc_file)
             buf = io.BytesIO()
             shkruaj_raportin_blerje(rez, buf)
             buf.seek(0)

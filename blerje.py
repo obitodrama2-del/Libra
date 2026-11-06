@@ -31,6 +31,21 @@ for _k, _v in {ST_PAS: 'BDD7EE', ST_VIT: 'FFEB9C', ST_MUNGON_FIN: 'FFC7CE', ST_M
     STATUS_FILLS.setdefault(_k, _v)
 
 
+# Kolonat e shumave të librit të blerjeve (pozicioni në fletë, kodi, emri); TVSH = kolonat që zbriten
+KOLONAT_LIBRIT = [
+    (6, 'e', 'Totali me TVSH'), (7, 'ë', 'Jashtë zbritjes/pa TVSH'), (8, 'f', 'Investime pa TVSH'),
+    (9, 'g', 'Import investimi i përjashtuar'), (10, 'gj', 'Import mallra i përjashtuar'),
+    (11, 'h', 'Import 20% baza'), (12, 'i', 'Import 20% TVSH'), (13, 'j', 'Import 10% baza'), (14, 'k', 'Import 10% TVSH'),
+    (15, 'l', 'Import 6% baza'), (16, 'll', 'Import 6% TVSH'), (17, 'm', 'Import investimi 20% baza'),
+    (18, 'n', 'Import investimi 20% TVSH'), (19, 'nj', 'Furnitor vendas 20% baza'), (20, 'o', 'Furnitor vendas 20% TVSH'),
+    (21, 'p', 'Furnitor vendas 10% baza'), (22, 'q', 'Furnitor vendas 10% TVSH'), (23, 'r', 'Furnitor vendas 6% baza'),
+    (24, 'rr', 'Furnitor vendas 6% TVSH'), (25, 's', 'Investim vendas 20% baza'), (26, 'sh', 'Investim vendas 20% TVSH'),
+    (27, 't', 'Fermerë 6% baza'), (28, 'th', 'Fermerë 6% TVSH'), (29, 'u', 'Autongarkesë baza'), (30, 'v', 'Autongarkesë TVSH'),
+    (31, 'x', 'Rregullime TVSH baza'), (32, 'xh', 'Rregullime TVSH'), (33, 'y', 'Borxh i keq baza'), (34, 'z', 'Borxh i keq TVSH'),
+]
+KOLONAT_TVSH = [12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34]
+
+
 def parse_libri_blerjes(path, sheet_name):
     """
     Lexon librin e blerjeve. Të dhënat fillojnë te rreshti 13 (ose pas rreshtit të kodeve a, b, c...)
@@ -62,6 +77,11 @@ def parse_libri_blerjes(path, sheet_name):
         data.loc[data[c].isin(['nan', 'None', 'NaN', '']), c] = np.nan
     data['Vlera'] = data['Vlera'].fillna(0)
     data['NIPT'] = data['NIPT'].str.upper()
+    for idx, kodi, emri in KOLONAT_LIBRIT:
+        if idx < raw.shape[1]:
+            data[f'K{idx}'] = pd.to_numeric(raw.loc[data.index, idx], errors='coerce').fillna(0)
+        else:
+            data[f'K{idx}'] = 0.0
     data = data.reset_index(drop=True)
     data.attrs['shuma_totale'] = (pd.to_numeric(raw.iloc[stop, 6], errors='coerce') if stop < len(raw) else None)
     return data
@@ -151,7 +171,7 @@ def _cift_anulues(rows_df, tol=TOLERANCE):
 
 
 def rakordo_blerje(financa_path, financa_sheet, portal_path, portal_sheet, cutoff=None, tol=TOLERANCE,
-                   eksport_financa_path=None):
+                   eksport_financa_path=None, artikujt_sc_path=None):
     fin = parse_libri_blerjes(financa_path, financa_sheet)
     port = parse_libri_blerjes(portal_path, portal_sheet)
 
@@ -289,7 +309,8 @@ def rakordo_blerje(financa_path, financa_sheet, portal_path, portal_sheet, cutof
     kontrolle = _kontrolle(fin, port, cifte_info, f_cift, tol)
     kategori_tvsh, tvsh_totale = _kategori_tvsh(fin, port, cifte_info, tol)
     furnitoret = _furnitoret(fin, port, fat, tol)
-    libri_me_sc, pa_magazine = _libri_me_sc(fin, port, f_cift, status_fin, eksport_financa_path, tol)
+    libri_me_sc, pa_magazine = _libri_me_sc(fin, port, f_cift, status_fin, eksport_financa_path, tol,
+                                         parse_artikujt_sc(artikujt_sc_path) if artikujt_sc_path is not None else None)
     if eksport_financa_path is not None and len(libri_me_sc):
         nuk = int((libri_me_sc['Magazina'] == 'NUK GJENDET NË SKEDAR').sum())
         if nuk:
@@ -329,6 +350,35 @@ def _furnitoret(fin, port, fat, tol):
     t['_a'] = t['Diferenca'].abs()
     t = t.sort_values(['_a', 'Fatura_Jo_OK'], ascending=False).drop(columns='_a').reset_index(drop=True)
     return t
+
+
+def parse_artikujt_sc(path):
+    """
+    Libri i blerjeve me artikuj nga Self Care (fleta 'Artikujt', një rresht për artikull, me NIVF).
+    Kthen dict NIVF (shkronja të vogla) -> (teksti i artikujve në një qelizë, numri i artikujve, normat e TVSH).
+    """
+    if hasattr(path, 'seek'):
+        path.seek(0)
+    xls = pd.ExcelFile(path)
+    emri = next((n for n in xls.sheet_names if n.strip().lower().startswith('artikuj')), None)
+    if emri is None:
+        raise ValueError("Skedari i artikujve nuk ka fletën 'Artikujt'.")
+    d = pd.read_excel(xls, sheet_name=emri)
+    kerkohen = ['NIVF', 'Përshkrimi i Mallit ose Shërbimit']
+    mungon = [c for c in kerkohen if c not in d.columns]
+    if mungon:
+        raise ValueError(f"Fleta 'Artikujt' nuk ka kolonat: {', '.join(mungon)}.")
+    d = d.dropna(subset=['NIVF'])
+    res = {}
+    for nivf, g in d.groupby(d['NIVF'].astype(str).str.strip().str.lower(), sort=False):
+        pershkrime = [str(x).strip() for x in g['Përshkrimi i Mallit ose Shërbimit'].dropna()]
+        tekst = f"[{len(pershkrime)} artikuj] " + '; '.join(pershkrime)
+        if len(tekst) > 32000:
+            tekst = tekst[:32000] + '…'
+        norma = g['Norma e TVSH'].value_counts() if 'Norma e TVSH' in g.columns else pd.Series(dtype=int)
+        normat = ', '.join(f"{int(n) if float(n).is_integer() else n}%: {c}" for n, c in norma.sort_index(ascending=False).items())
+        res[nivf] = (tekst, len(pershkrime), normat)
+    return res
 
 
 def _nr_norm(x):
@@ -416,7 +466,7 @@ def _cifto_eksport(fin, inv, tol=TOLERANCE):
     return res
 
 
-def _libri_me_sc(fin, port, f_cift, status_fin, eksport_path, tol):
+def _libri_me_sc(fin, port, f_cift, status_fin, eksport_path, tol, artikujt=None):
     """Fleta 'Libri_Financa_me_SC': çdo rresht i librit të Financa-s me ekuivalenten nga Self Care dhe, nga eksporti i Financa-s, magazina/llogaria."""
     inv = parse_eksport_blerje(eksport_path) if eksport_path is not None else None
     ekspo = _cifto_eksport(fin, inv, tol) if inv is not None else {}
@@ -444,8 +494,25 @@ def _libri_me_sc(fin, port, f_cift, status_fin, eksport_path, tol):
                 'Llogaria': (e['Llogaria'] or None) if e is not None else None,
                 'Pershkrimi_Llogarise': (e['Pershkrimi'] or None) if e is not None else None,
             })
+        if artikujt is not None:
+            nk = [str(x).strip().lower() for x in (p['NumriSerial'] if p is not None else None, f['NumriSerial']) if isinstance(x, str)]
+            hit = next((artikujt[k] for k in nk if k in artikujt), None)
+            r['Artikujt_SC'] = hit[0] if hit else None
+            r['Norma_TVSH_Artikujve_SC'] = hit[2] if hit else None
+        tv_f = sum(f[f'K{k}'] for k in KOLONAT_TVSH)
+        tv_p = sum(p[f'K{k}'] for k in KOLONAT_TVSH) if p is not None else None
+        r['TVSH_Zbritshme_Financa'] = tv_f
+        r['TVSH_Zbritshme_SC'] = tv_p
+        r['Diferenca_TVSH'] = (tv_f - tv_p) if tv_p is not None else None
+        for idx, kodi, emri in KOLONAT_LIBRIT:
+            r[f'Financa · {kodi} {emri}'] = f[f'K{idx}']
+        for idx, kodi, emri in KOLONAT_LIBRIT:
+            r[f'SC · {kodi} {emri}'] = p[f'K{idx}'] if p is not None else None
         rows.append(r)
     df = pd.DataFrame(rows)
+    # vetëm kolonat e librit që kanë ndonjë vlerë (në Financa ose SC), për të mos mbushur fletën me zero
+    boshe = [c for c in df.columns if c.startswith(('Financa · ', 'SC · ')) and (df[c].fillna(0) == 0).all()]
+    df = df.drop(columns=boshe)
     if inv is None or df.empty:
         return df, pd.DataFrame(columns=['Llogaria', 'Pershkrimi_Llogarise', 'Fatura', 'Vlera_Financa'])
     pa = df[df['Magazina'] == 'PA MAGAZINË']
