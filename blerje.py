@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 import rakordim
-from rakordim import (TOLERANCE, MUAJT, fmt_data, kush_ka_me_shume, fleta_default,
+from rakordim import (eshte_karburant, TOLERANCE, MUAJT, fmt_data, kush_ka_me_shume, fleta_default,
                       emri_muajit, muaji_kryesor, format_workbook, STATUS_FILLS)
 
 UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
@@ -323,6 +323,9 @@ def rakordo_blerje(financa_path, financa_sheet, portal_path, portal_sheet, cutof
         'diferenca': total_diff, 'e_pashpjeguar': e_pashpjeguar, 'cutoff': cutoff,
         'paralajmerime': paralajmerime, 'n_fin': len(fin), 'n_port': len(port),
     }
+    rez['n_karburant'] = int(libri_me_sc.apply(lambda r: any(
+        eshte_karburant(r.get(c), emer=True) for c in ('Pershkrimi_Llogarise', 'F|ç', 'S|ç')) or eshte_karburant(r.get('Artikujt_SC')),
+        axis=1).sum()) if len(libri_me_sc) else 0
     rez['veprime'] = _veprimet(rez)
     rez['permbledhje'] = _permbledhja(rez)
     return rez
@@ -671,6 +674,7 @@ def _permbledhja(rez):
         *([f"{int((rez['libri_me_sc']['Magazina'] == 'PA MAGAZINË').sum())} fatura të librit të Financa-s janë pa magazinë (regjistruar direkt në llogari); "
            f"shih fletën 'Libri_Financa_me_SC' (rreshtat me ngjyrë portokalli, me numrin dhe përshkrimin e llogarisë)."]
           if len(rez['libri_me_sc']) and 'Magazina' in rez['libri_me_sc'].columns else []),
+        *([f"{rez['n_karburant']} fatura lidhen me karburantin (shkronja të kuqe)."] if rez.get('n_karburant') else []),
         f"TVSH 20% e zbritshme: Financa {rez['tvsh_totale']['Financa']:,.0f}, Portali {rez['tvsh_totale']['Portali']:,.0f}, "
         f"diferenca {rez['tvsh_totale']['Diferenca']:,.0f}.",
     ]

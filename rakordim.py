@@ -914,6 +914,19 @@ def shkruaj_raportin(rez, out):
     format_workbook(out)
 
 
+FUEL_RE = re.compile(r'karburant|carburant|nafte|naft\b|benzin|diesel|gazoil|\bgpl\b|\bfuel\b|petrol')
+FUEL_EMRI_RE = re.compile(r'\boil\b')  # vetëm te emrat e furnitorëve/llogarive (te artikujt 'Body Oil' nuk është karburant)
+
+
+def eshte_karburant(tekst, emer=False):
+    """True kur teksti ka lidhje me karburantin (karburant, naftë, benzinë, diesel...). emer=True: edhe 'OIL' (emër furnitori/llogarie)."""
+    if tekst is None or (isinstance(tekst, float) and pd.isna(tekst)):
+        return False
+    t = unicodedata.normalize('NFKD', str(tekst).lower())
+    t = ''.join(ch for ch in t if not unicodedata.combining(ch))
+    return bool(FUEL_RE.search(t) or (emer and FUEL_EMRI_RE.search(t)))
+
+
 STATUS_FILLS = {
     ST_OK: 'C6EFCE',
     ST_PRITJE: 'BDD7EE', ST_PAS: 'BDD7EE',
@@ -977,6 +990,13 @@ def format_workbook(path):
                 if fill:
                     for cell in row:
                         cell.fill = fill
+            # karburanti: shkronja të kuqe për gjithë rreshtin (furnitor/llogari/artikuj që lidhen me karburantin)
+            if any(isinstance(c.value, str) and eshte_karburant(
+                    c.value, emer=bool(headers[c.column-1] and ('Emri tregtar' in str(headers[c.column-1]) or
+                                       str(headers[c.column-1]) in ('Furnitori', 'Pershkrimi_Llogarise'))))
+                   for c in row if c.column-1 < len(headers)):
+                for cell in row:
+                    cell.font = Font(name='Arial', color='C00000', bold=True)
             mag_col = headers.index('Magazina')+1 if 'Magazina' in headers else None
             if mag_col and row[mag_col-1].value == 'PA MAGAZINË':
                 pa_mag_fill = PatternFill('solid', start_color='F4B183', end_color='F4B183')

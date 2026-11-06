@@ -8,8 +8,9 @@ import pandas as pd
 
 from rakordim import rakordo, shkruaj_raportin
 from blerje import rakordo_blerje, shkruaj_raportin_blerje, emrat_libri_me_sc
+from rakordim import eshte_karburant
 
-VERSIONI = "v1.9 (06.11.2026)"  # rrite numrin sa herë që bëhet një ndryshim
+VERSIONI = "v1.10 (06.11.2026)"  # rrite numrin sa herë që bëhet një ndryshim
 
 
 def versioni_git():
@@ -200,7 +201,10 @@ if run and mode == "Blerje":
             st.caption("Çdo rresht i librit të Financa-s me ekuivalenten nga Self Care. Rreshtat portokalli janë fatura pa magazinë (llogaria dhe përshkrimi në kolonat e fundit).")
             libri_ekran = rez['libri_me_sc'].rename(columns=emrat_libri_me_sc(rez['libri_me_sc']))
             st.dataframe(libri_ekran.style.apply(
-                lambda r: ['background-color: #f4b183' if r.get('Magazina') == 'PA MAGAZINË' else ''] * len(r), axis=1),
+                lambda r: [('background-color: #f4b183;' if r.get('Magazina') == 'PA MAGAZINË' else '') +
+                           ('color: #c00000; font-weight: bold;' if any(
+                               eshte_karburant(r.get(c), emer=True) for c in ('Pershkrimi_Llogarise', 'Financa · ç Emri tregtar / personi'))
+                            or eshte_karburant(r.get('Artikujt_SC')) else '')] * len(r), axis=1),
                 use_container_width=True)
         with tabs[7]:
             st.dataframe(rez['kontroll'], use_container_width=True)
