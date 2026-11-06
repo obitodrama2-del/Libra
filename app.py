@@ -9,7 +9,7 @@ import pandas as pd
 from rakordim import rakordo, shkruaj_raportin
 from blerje import rakordo_blerje, shkruaj_raportin_blerje
 
-VERSIONI = "v1.4 (06.11.2026)"  # rrite numrin sa herë që bëhet një ndryshim
+VERSIONI = "v1.5 (06.11.2026)"  # rrite numrin sa herë që bëhet një ndryshim
 
 
 def versioni_git():

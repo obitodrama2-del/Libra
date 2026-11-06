@@ -8,6 +8,7 @@ import re
 import numpy as np
 import pandas as pd
 
+import rakordim
 from rakordim import (TOLERANCE, MUAJT, fmt_data, kush_ka_me_shume, fleta_default,
                       emri_muajit, muaji_kryesor, format_workbook, STATUS_FILLS)
 
@@ -366,7 +367,7 @@ def _veprimet(rez):
     if n_pas:
         v.append((1, f"Rigjenero librin SC pas {fmt_data(rez['cutoff'])}", f"{n_pas} fatura Financa me datë pas librit SC.", None))
     for _, r in f[f['Statusi'] == ST_MUNGON_FIN].iterrows():
-        v.append((2, f"Fut/kontrollo te Financa faturën {r['NrFature']} (NIVF {r['NIVF']})", f"{r['Furnitori']}, {fmt_data(r['Data'])}", r['Efekti']))
+        v.append((2, f"Fut/kontrollo te Financa faturën {r['NrFature']} (NIVF {r['NIVF']})", f"{r['Furnitori']}, {fmt_data(r['Data'])}. Nuk e gjej në librin e Financa-s të ngarkuar: kontrollo nëse është regjistruar në muaj tjetër ose nuk është futur ende.", r['Efekti']))
     for _, r in f[f['Statusi'] == ST_MUNGON_PORTAL].iterrows():
         v.append((2, f"Kontrollo në Portal faturën {r['NrFature']} (NIVF {r['NIVF']})", f"{r['Furnitori']}, {fmt_data(r['Data'])}", r['Efekti']))
     for _, r in f[f['Statusi'] == ST_DIFERENCE].iterrows():
@@ -384,7 +385,7 @@ def _veprimet(rez):
     for _, r in f[f['Statusi'] == ST_VIT].iterrows():
         v.append((5, f"Kontrollo periudhën e faturës së vitit të kaluar {r['NrFature']} (NIVF {r['NIVF']})",
                   f"{r['Furnitori']}, {fmt_data(r['Data'])}", r['Efekti']))
-    return pd.DataFrame(v, columns=['Prioriteti', 'Veprimi', 'Detaje', 'Vlera']).sort_values('Prioriteti', kind='stable').reset_index(drop=True)
+    return rakordim.rendit_veprimet(v)
 
 
 def _permbledhja(rez):

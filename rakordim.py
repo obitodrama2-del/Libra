@@ -793,6 +793,22 @@ def rakordo(financa_path, financa_sheet, portal_path, portal_sheet,
     return rez
 
 
+NIVELET = {1: 'I LARTË', 2: 'I LARTË', 3: 'MESATAR', 4: 'MESATAR', 5: 'I ULËT'}
+
+
+def rendit_veprimet(v):
+    """
+    Prioriteti: 1-2 = ndikon drejtpërdrejt diferencën (librin SC që duhet rigjeneruar, fatura që mungojnë
+    ose kanë vlerë ndryshe); 3-4 = kontroll i të dhënave (storno, dyfishime, serial, kategori TVSH);
+    5 = vëzhgim. Brenda së njëjtës prioritet, vlera më e madhe del e para.
+    """
+    df = pd.DataFrame(v, columns=['Prioriteti', 'Veprimi', 'Detaje', 'Vlera'])
+    df.insert(0, 'Niveli', df['Prioriteti'].map(NIVELET))
+    df['_abs'] = df['Vlera'].abs().fillna(0)
+    df = df.sort_values(['Prioriteti', '_abs'], ascending=[True, False], kind='stable').drop(columns='_abs')
+    return df.reset_index(drop=True)
+
+
 def nderto_veprimet(rez, trans):
     cutoff = rez['cutoff']
     v = []
@@ -835,8 +851,7 @@ def nderto_veprimet(rez, trans):
     n_pa_niv = int((sd['Status'] == 'PA NIVF (jashtë llogaritjes)').sum())
     if n_pa_niv:
         v.append((5, f"{n_pa_niv} fatura pa NIVF në F5", 'Nuk dalin në Portal; kontrollo nëse duhej të kishin NIVF.', None))
-    df = pd.DataFrame(v, columns=['Prioriteti', 'Veprimi', 'Detaje', 'Vlera']).sort_values('Prioriteti', kind='stable')
-    return df.reset_index(drop=True)
+    return rendit_veprimet(v)
 
 
 def nderto_permbledhjen(rez):
@@ -877,7 +892,7 @@ def shkruaj_raportin(rez, out):
     with pd.ExcelWriter(out, engine='openpyxl') as writer:
         pd.DataFrame(perm_rows).to_excel(writer, sheet_name='Përmbledhje', index=False)
         rez['ura'].to_excel(writer, sheet_name='Ura e diferencës', index=False)
-        veprime = rez['veprime'] if len(rez['veprime']) else pd.DataFrame(columns=['Prioriteti', 'Veprimi', 'Detaje', 'Vlera'])
+        veprime = rez['veprime'] if len(rez['veprime']) else pd.DataFrame(columns=['Niveli', 'Prioriteti', 'Veprimi', 'Detaje', 'Vlera'])
         veprime.to_excel(writer, sheet_name="Veprime për t'u bërë", index=False)
         if rez['paralajmerime']:
             pd.DataFrame({'Paralajmerime': rez['paralajmerime']}).to_excel(writer, sheet_name='Paralajmerime', index=False)
