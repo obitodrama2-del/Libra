@@ -9,8 +9,22 @@ import pandas as pd
 from rakordim import rakordo, shkruaj_raportin
 from blerje import rakordo_blerje, shkruaj_raportin_blerje
 
+VERSIONI = "v1.4 (06.11.2026)"  # rrite numrin sa herë që bëhet një ndryshim
+
+
+def versioni_git():
+    """Kodi i shkurtër i commit-it (kur depoja është e disponueshme), për ta dalluar saktë versionin."""
+    try:
+        import subprocess
+        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
+                              timeout=3, cwd=__file__.rsplit("/", 1)[0] or ".").stdout.strip()
+    except Exception:
+        return ""
+
+
 st.set_page_config(page_title="Rakordim Financa vs Portal", layout="wide")
 st.title("Rakordim: Financa vs Portali Self Care")
+st.caption(f"Versioni {VERSIONI}" + (f" · commit {versioni_git()}" if versioni_git() else ""))
 
 mode = st.radio("Libri", ["Shitje", "Blerje"], horizontal=True)
 
