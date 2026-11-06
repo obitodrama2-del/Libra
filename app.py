@@ -9,7 +9,7 @@ import pandas as pd
 from rakordim import rakordo, shkruaj_raportin
 from blerje import rakordo_blerje, shkruaj_raportin_blerje
 
-VERSIONI = "v1.5 (06.11.2026)"  # rrite numrin sa herë që bëhet një ndryshim
+VERSIONI = "v1.7 (06.11.2026)"  # rrite numrin sa herë që bëhet një ndryshim
 
 
 def versioni_git():
@@ -96,6 +96,12 @@ if mode == "Shitje":
         type=["xlsx"], key="transaksionet", accept_multiple_files=True
     )
 
+eksport_financa_file = None
+if mode == "Blerje":
+    eksport_financa_file = st.file_uploader(
+        "Opsionale: eksporti i faturave të blerjes nga Financa (Faturime blerje, .xls/.xlsx) - tregon cilat fatura janë me magazinë dhe, për ato pa magazinë, llogarinë e regjistrimit",
+        type=["xls", "xlsx"], key="eksport_financa")
+
 run = st.button("Krahaso", type="primary", disabled=not (financa_file and portal_file))
 
 if run and mode == "Shitje":
@@ -156,7 +162,8 @@ if run and mode == "Shitje":
 if run and mode == "Blerje":
     try:
         with st.spinner("Duke rakorduar blerjet..."):
-            rez = rakordo_blerje(financa_file, financa_sheet, portal_file, portal_sheet, cutoff=cutoff)
+            rez = rakordo_blerje(financa_file, financa_sheet, portal_file, portal_sheet, cutoff=cutoff,
+                                  eksport_financa_path=eksport_financa_file)
             buf = io.BytesIO()
             shkruaj_raportin_blerje(rez, buf)
             buf.seek(0)
@@ -170,7 +177,7 @@ if run and mode == "Blerje":
         m3.metric("Fatura Financa / Portal", f"{rez['n_fin']} / {rez['n_port']}")
         st.download_button("Shkarko raportin (Excel)", data=buf, file_name="Rakordim_Blerje.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        tabs = st.tabs(["Ura e blerjeve", "Veprime për t'u bërë", "Faturat jo OK", "Kontrolle", "Kategori TVSH", "Kontroll"])
+        tabs = st.tabs(["Ura e blerjeve", "Veprime për t'u bërë", "Faturat jo OK", "Kontrolle", "Kategori TVSH", "Furnitoret", "Libri Financa me SC", "Kontroll"])
         with tabs[0]:
             st.dataframe(shfaq_statuse(rez['ura']), use_container_width=True)
         with tabs[1]:
@@ -182,4 +189,12 @@ if run and mode == "Blerje":
         with tabs[4]:
             st.dataframe(shfaq_statuse(rez['kategori_tvsh']), use_container_width=True)
         with tabs[5]:
+            st.caption("Një rresht për çdo furnitor, i renditur sipas diferencës më të madhe.")
+            st.dataframe(shfaq_statuse(rez['furnitoret']), use_container_width=True)
+        with tabs[6]:
+            st.caption("Çdo rresht i librit të Financa-s me ekuivalenten nga Self Care. Rreshtat portokalli janë fatura pa magazinë (llogaria dhe përshkrimi në kolonat e fundit).")
+            st.dataframe(rez['libri_me_sc'].style.apply(
+                lambda r: ['background-color: #f4b183' if r.get('Magazina') == 'PA MAGAZINË' else ''] * len(r), axis=1),
+                use_container_width=True)
+        with tabs[7]:
             st.dataframe(rez['kontroll'], use_container_width=True)

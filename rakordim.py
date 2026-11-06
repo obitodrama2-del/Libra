@@ -941,7 +941,7 @@ def format_workbook(path):
     green_fill = PatternFill('solid', start_color='C6EFCE', end_color='C6EFCE')
     status_fills = {k: PatternFill('solid', start_color=v, end_color=v) for k, v in STATUS_FILLS.items()}
     # kolonat që nuk janë shuma (numra rendorë, ditë, etj.)
-    kol_pa_format = {'Numri', 'Prioriteti', 'Vonesa_Dite', 'NrFature_Financa', 'NrFature', 'Nr', 'NrRendor'}
+    kol_pa_format = {'Numri', 'Prioriteti', 'Vonesa_Dite', 'NrFature_Financa', 'NrFature', 'Nr', 'NrRendor', 'Nr_Dok_Financa', 'NrFature_SC', 'Llogaria'}
 
     for ws in wb.worksheets:
         hdr = 3 if str(ws['A1'].value or '').startswith('Konventa:') else 1
@@ -977,6 +977,13 @@ def format_workbook(path):
                 if fill:
                     for cell in row:
                         cell.fill = fill
+            mag_col = headers.index('Magazina')+1 if 'Magazina' in headers else None
+            if mag_col and row[mag_col-1].value == 'PA MAGAZINË':
+                pa_mag_fill = PatternFill('solid', start_color='F4B183', end_color='F4B183')
+                for cell in row:
+                    cell.fill = pa_mag_fill
+                if status_col and status_fills.get(row[status_col-1].value):
+                    row[status_col-1].fill = status_fills[row[status_col-1].value]
             if oper_col and row[oper_col-1].value:
                 fill = red_fill if 'Asnjë' in str(row[oper_col-1].value) else green_fill
                 for cell in row:
